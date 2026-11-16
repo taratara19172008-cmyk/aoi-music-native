@@ -10,6 +10,7 @@ struct Artwork: Codable, Hashable {
 
 struct SongAttrs: Codable, Hashable {
     var name: String?
+    var url: String?
     var artistName: String?
     var albumName: String?
     var artwork: Artwork?
