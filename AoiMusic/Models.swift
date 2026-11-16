@@ -15,6 +15,8 @@ struct SongAttrs: Codable, Hashable {
     var artwork: Artwork?
     var previews: [Preview]?
     var durationInMillis: Int?
+    var playParams: PlayParams?
+    struct PlayParams: Codable, Hashable { var id: String?; var catalogId: String?; var isLibrary: Bool? }
     struct Preview: Codable, Hashable { var url: String? }
 }
 
@@ -33,6 +35,7 @@ struct Song: Codable, Identifiable, Hashable {
     var artist: String { attributes?.artistName ?? "" }
     var album: String { attributes?.albumName ?? "" }
     var previewURL: String? { attributes?.previews?.first?.url }
+    var playbackId: String { attributes?.playParams?.catalogId ?? id }
     func art(_ w: Int, _ h: Int) -> String? { attributes?.artwork?.urlString(w, h) }
 }
 
