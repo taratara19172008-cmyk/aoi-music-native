@@ -119,7 +119,7 @@ final class AIClient {
         var text = raw
         let start = raw.range(of: "{\"songs\"")?.lowerBound ?? raw.range(of: "{")?.lowerBound
         if let start = start, let end = raw.range(of: "}", options: .backwards) {
-            let jsonStr = String(raw[start.lowerBound...end.upperBound])
+            let jsonStr = String(raw[start...end.lowerBound])
             struct Block: Decodable { var songs: [AIPick]? }
             if let data = jsonStr.data(using: .utf8),
                let block = try? JSONDecoder().decode(Block.self, from: data),
