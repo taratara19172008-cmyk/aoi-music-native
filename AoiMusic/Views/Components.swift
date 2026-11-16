@@ -96,12 +96,37 @@ struct SongRow: View {
     }
 }
 
+struct ArtworkSquare: View {
+    var urlString: String?
+    var corner: CGFloat = 14
+    var body: some View {
+        ZStack {
+            Color.white.opacity(0.35)
+            if let s = urlString, let url = URL(string: s) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img): img.resizable().scaledToFill()
+                    default: Color.clear
+                    }
+                }
+            }
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+    }
+}
+
 struct CollectionCard: View {
     var item: CollectionItem
     var width: CGFloat = 150
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ArtworkImage(urlString: item.art(320, 320), size: width, corner: 14)
+            if width > 0 {
+                ArtworkImage(urlString: item.art(320, 320), size: width, corner: 14)
+            } else {
+                ArtworkSquare(urlString: item.art(320, 320), corner: 14)
+            }
             Text(item.title)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
@@ -110,7 +135,8 @@ struct CollectionCard: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .frame(width: width)
+        .frame(width: width > 0 ? width : nil)
+        .frame(maxWidth: width > 0 ? nil : .infinity, alignment: .leading)
     }
 }
 
