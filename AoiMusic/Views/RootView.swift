@@ -110,17 +110,15 @@ struct RootView: View {
             if #available(iOS 26.0, *) {
                 Color.clear
                     .frame(width: 66, height: 56)
-                    .glassEffect(.regular, in: rr)
+                    .glassEffect(.regular.interactive(), in: rr)
             } else {
                 rr.fill(.white.opacity(0.35))
                     .frame(width: 66, height: 56)
             }
         }
         .shadow(color: .black.opacity(0.10), radius: 6, y: 2)
-        .scaleEffect(railDragY != nil ? 1.10 : 1.0)
         .offset(y: y - 28)
         .animation(railDragY == nil ? .spring(response: 0.42, dampingFraction: 0.60) : nil, value: y)
-        .animation(.spring(response: 0.30, dampingFraction: 0.62), value: railDragY != nil)
     }
 
     private var rail: some View {
