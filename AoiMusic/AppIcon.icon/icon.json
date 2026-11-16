@@ -1,13 +1,6 @@
 {
   "fill-specializations": [
-    {
-      "value": {
-        "linear-gradient": [
-          { "color": "srgb:0.69412,0.83922,0.86275,1.00000", "transition-location": 0 },
-          { "color": "srgb:0.70196,0.83137,0.80392,1.00000", "transition-location": 1 }
-        ]
-      }
-    },
+    { "value": { "solid": "srgb:0.69804,0.83529,0.83137,1.00000" } },
     { "appearance": "dark", "value": "automatic" }
   ],
   "groups": [
