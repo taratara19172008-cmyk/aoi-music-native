@@ -39,7 +39,7 @@ struct LibraryView: View {
                     }
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                         ForEach(playlists) { p in
-                            CollectionCard(item: p, width: 160)
+                            CollectionCard(item: p, width: 0)
                                 .onTapGesture { nav.detail = .collection(kind: "lplaylist", id: p.id) }
                         }
                     }
@@ -53,7 +53,7 @@ struct LibraryView: View {
                         SectionTitle(text: settings.t("lib_artists"))
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                             ForEach(artists) { a in
-                                CollectionCard(item: a, width: 160)
+                                CollectionCard(item: a, width: 0)
                                     .onTapGesture { nav.detail = .artist(id: a.id) }
                             }
                         }
