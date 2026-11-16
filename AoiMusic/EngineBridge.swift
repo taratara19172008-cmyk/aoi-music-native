@@ -12,7 +12,7 @@ struct EngineItem: Decodable {
 }
 
 final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
-    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html?v=4")!
+    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html?v=5")!
     let webView: WKWebView
     @Published var ready = false
     @Published var authorized = false
@@ -21,6 +21,8 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     @Published var lastError = ""
     @Published var pageLoaded = false
     private var pendingAuthorize = false
+    private var probeTimer: Timer?
+    private var lastProbe = ""
 
     var onState: ((Bool) -> Void)?
     var onItem: ((EngineItem?) -> Void)?
@@ -30,7 +32,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     func logEvent(_ s: String) {
         var lines = lastError.isEmpty ? [] : lastError.components(separatedBy: "\n")
         lines.append(s)
-        if lines.count > 6 { lines = Array(lines.suffix(6)) }
+        if lines.count > 10 { lines = Array(lines.suffix(10)) }
         lastError = lines.joined(separator: "\n")
     }
 
@@ -50,6 +52,19 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         webView.uiDelegate = self
         webView.navigationDelegate = self
         webView.load(URLRequest(url: Self.engineURL))
+        probeTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in self?.probe() }
+    }
+
+    private func probe() {
+        if ready { probeTimer?.invalidate(); probeTimer = nil; return }
+        webView.evaluateJavaScript("window.__mkScript + '|' + (typeof window.MusicKit) + '|' + (window.__aoiHasMusic ? 'music' : 'nomusic')") { [weak self] result, error in
+            guard let self else { return }
+            let text: String
+            if let error { text = "probe error: " + error.localizedDescription }
+            else if let str = result as? String { text = "probe: " + str }
+            else { text = "probe: nil result" }
+            if text != self.lastProbe { self.lastProbe = text; self.logEvent(text) }
+        }
     }
 
     // MARK: - JS -> Swift
@@ -102,9 +117,9 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     }
     func authorize() {
         if !ready {
+            if !pendingAuthorize { logEvent("tap connect: engine not ready, queued") }
             pendingAuthorize = true
             if !pageLoaded { webView.reload() }
-            logEvent("tap connect: engine not ready, queued")
             return
         }
         DispatchQueue.main.async { [weak self] in
