@@ -38,34 +38,31 @@ struct LibraryView: View {
                         .foregroundStyle(settings.accent)
                         .padding(.top, 18)
                     }
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                        ForEach(playlists) { p in
-                            CollectionCard(item: p, width: 0)
-                                .onTapGesture { nav.detail = .collection(kind: "lplaylist", id: p.id) }
-                        }
+                    hGrid(playlists) { p in
+                        libRow(p) { nav.detail = .collection(kind: "lplaylist", id: p.id) }
                     }
                     if !albums.isEmpty {
                         SectionTitle(text: settings.t("lib_albums"))
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                            ForEach(albums) { a in
-                                CollectionCard(item: a, width: 0)
-                                    .onTapGesture { nav.detail = .collection(kind: "album", id: a.id) }
-                            }
+                        hGrid(albums) { a in
+                            libRow(a) { nav.detail = .collection(kind: "album", id: a.id) }
                         }
                     }
                     if !songs.isEmpty {
                         SectionTitle(text: settings.t("lib_songs"))
-                        ForEach(Array(songs.enumerated()), id: \.element.id) { i, s in
-                            SongRow(song: s, index: i, onTap: { player.playSongs(songs, start: i) }, onAdd: { addSong = s })
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHGrid(rows: Array(repeating: GridItem(.fixed(60), spacing: 6), count: 3), spacing: 14) {
+                                ForEach(Array(songs.enumerated()), id: \.element.id) { i, s in
+                                    SongRow(song: s, index: i, onTap: { player.playSongs(songs, start: i) }, onAdd: { addSong = s })
+                                        .frame(width: colW)
+                                }
+                            }
+                            .padding(.vertical, 4)
                         }
                     }
                     if !artists.isEmpty {
                         SectionTitle(text: settings.t("lib_artists"))
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                            ForEach(artists) { a in
-                                CollectionCard(item: a, width: 0)
-                                    .onTapGesture { nav.detail = .artist(id: a.id) }
-                            }
+                        hGrid(artists) { a in
+                            libRow(a, artist: true) { nav.detail = .artist(id: a.id) }
                         }
                     }
                 }
@@ -79,6 +76,38 @@ struct LibraryView: View {
         .task { await load() }
         .sheet(isPresented: $showCreate) { CreatePlaylistSheet { Task { await reload() } } }
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
+    }
+
+    private var colW: CGFloat { UIScreen.main.bounds.width - 138 }
+
+    private func hGrid(_ items: [CollectionItem], cell: @escaping (CollectionItem) -> some View) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHGrid(rows: Array(repeating: GridItem(.fixed(58), spacing: 8), count: 3), spacing: 14) {
+                ForEach(items) { item in cell(item) }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func libRow(_ item: CollectionItem, artist: Bool = false, tap: @escaping () -> Void) -> some View {
+        HStack(spacing: 10) {
+            ArtworkImage(urlString: item.art(120, 120), size: 46, corner: artist ? 23 : 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                if !item.sub.isEmpty {
+                    Text(item.sub)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(width: colW, height: 58, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { tap() }
     }
 
     private func load() async {
