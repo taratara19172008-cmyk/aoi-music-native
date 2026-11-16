@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import MediaPlayer
+import WidgetKit
 
 struct SearchEntity: Codable, Identifiable, Hashable {
     var kind: String // song | album | playlist | artist
@@ -72,6 +73,7 @@ final class Player: ObservableObject {
         startWatchdog()
         setupPreview()
         setupRemote()
+        setupWidgetCommands()
     }
 
     // MARK: - persistence helpers
@@ -296,9 +298,14 @@ final class Player: ObservableObject {
     }
 
     func jumpTo(_ i: Int) {
-        guard queue.indices.contains(i), i != index else { return }
+        guard queue.indices.contains(i) else { return }
+        // Only a sure match may no-op: if our index bookkeeping drifted
+        // from the engine's real position, i == index here while another
+        // song is actually playing, and the tap then did nothing — the
+        // first song just kept playing. When in doubt, send the jump.
+        if i == index, current?.playbackId == queue[i].playbackId { return }
         if useEngine {
-            engine.jumpTo(i)
+            engine.jumpTo(i, expectedId: queue[i].playbackId)
             index = i
             current = queue[i]
             recordHistory(queue[i])
@@ -334,6 +341,30 @@ final class Player: ObservableObject {
         pendingPlay = ([], 0, st.id, Date(), false)
         engine.callStation(st.id)
         isPlaying = true
+    }
+
+    // MARK: - widget commands
+    private func setupWidgetCommands() {
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            Unmanaged.passUnretained(self).toOpaque(),
+            { _, observer, _, _, _ in
+                guard let observer = observer else { return }
+                let p = Unmanaged<Player>.fromOpaque(observer).takeUnretainedValue()
+                DispatchQueue.main.async { p.handleWidgetCommand() }
+            },
+            WidgetShared.commandNotification as CFString,
+            nil,
+            .deliverImmediately)
+    }
+    func handleWidgetCommand() {
+        guard let cmd = WidgetShared.takeCommand() else { return }
+        switch cmd {
+        case "toggle": togglePlay()
+        case "next": next()
+        case "prev": prev()
+        default: break
+        }
     }
 
     // MARK: - history
@@ -488,6 +519,11 @@ final class Player: ObservableObject {
         cc.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
         cc.nextTrackCommand.addTarget { [weak self] _ in self?.next(); return .success }
         cc.previousTrackCommand.addTarget { [weak self] _ in self?.prev(); return .success }
+        // The lock screen must offer track changes like the official
+        // app, never +/-10s seeks (the engine page registers the matching
+        // media-session handlers for the web-driven side).
+        cc.skipForwardCommand.isEnabled = false
+        cc.skipBackwardCommand.isEnabled = false
         cc.changePlaybackPositionCommand.addTarget { [weak self] e in
             if let ev = e as? MPChangePlaybackPositionCommandEvent { self?.seek(ev.positionTime) }
             return .success
@@ -511,6 +547,7 @@ final class Player: ObservableObject {
         if let artStr = cur.art(512, 512), let url = URL(string: artStr) {
             URLSession.shared.dataTask(with: url) { data, _, _ in
                 guard let data = data, let img = UIImage(data: data) else { return }
+                WidgetShared.publishArtwork(data)
                 var i2 = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? info
                 i2[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = i2
@@ -518,5 +555,6 @@ final class Player: ObservableObject {
         }
         info[MPMediaItemPropertyArtwork] = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        WidgetShared.publish(title: cur.title, artist: cur.artist, isPlaying: isPlaying)
     }
 }

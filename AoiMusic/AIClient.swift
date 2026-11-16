@@ -51,10 +51,13 @@ final class AIClient {
 
     // One chat round-trip: the model's prose plus the songs it named
     // (unresolved — resolve() checks them against the real catalog).
-    func chat(history: [(role: String, content: String)]) async throws -> (text: String, picks: [AIPick]) {
+    func chat(history: [(role: String, content: String)], profile: String? = nil) async throws -> (text: String, picks: [AIPick]) {
         let key = AIKeyStore.get()
         guard !key.isEmpty else { throw AIError.noKey }
         var messages: [[String: String]] = [["role": "system", "content": Self.systemPrompt]]
+        if let profile = profile, !profile.isEmpty {
+            messages.append(["role": "system", "content": profile])
+        }
         messages += history.map { ["role": $0.role, "content": $0.content] }
         let raw = try await complete(messages: messages, key: key)
         return Self.parse(raw)
@@ -62,18 +65,56 @@ final class AIClient {
 
     // Picks in the spirit of an existing playlist, for the AI strip under
     // every playlist page.
-    func recommend(seed: [Song], lang: String) async throws -> [AIPick] {
+    func recommend(seed: [Song], lang: String, avoid: [Song] = []) async throws -> [AIPick] {
         let key = AIKeyStore.get()
         guard !key.isEmpty else { throw AIError.noKey }
         let lines = seed.prefix(15).map { "\($0.title) — \($0.artist)" }.joined(separator: "\n")
-        let ask = lang == "en"
+        var ask = lang == "en"
             ? "Here is a playlist:\n\(lines)\nRecommend 10 more songs in the same spirit that are NOT already in this list."
             : "这是一个歌单：\n\(lines)\n请推荐 10 首气质相近、且不在上面列表里的歌。"
+        if !avoid.isEmpty {
+            // "换一批" used to re-ask blind: the model happily returned the
+            // same batch and the button looked dead. Name the songs she
+            // has already been shown so the new batch is actually new.
+            let names = avoid.prefix(20).map { "\($0.title) — \($0.artist)" }.joined(separator: "; ")
+            ask += lang == "en"
+                ? "\nDo NOT recommend any of these — she has already been shown them: \(names)."
+                : "\n不要推荐这些，她已经看过了：\(names)。"
+        }
         let raw = try await complete(messages: [
             ["role": "system", "content": Self.systemPrompt],
             ["role": "user", "content": ask],
         ], key: key)
         return Self.parse(raw).picks
+    }
+
+    // MARK: - Taste profile (v107, mirrors the web app)
+    // A compact picture of her listening — recent plays, loved songs,
+    // playlist names — attached to CHAT requests only, so "something
+    // like what I've been listening to lately" actually knows what that
+    // is (the native chat used to answer blind and served generic chart
+    // hits). Titles and artists only; cached for ten minutes.
+    private var cachedProfile: (text: String, at: Date)?
+
+    func tasteProfile(api: APIClient) async -> String? {
+        if let c = cachedProfile, Date().timeIntervalSince(c.at) < 600 { return c.text }
+        var parts: [String] = []
+        let recent = (try? await api.recentPlayed(limit: 15)) ?? []
+        if !recent.isEmpty {
+            parts.append("Recently played: " + recent.prefix(15).map { "\($0.title) — \($0.artist)" }.joined(separator: "; "))
+        }
+        let favs = await api.favoriteSongs()
+        if !favs.isEmpty {
+            parts.append("Loved songs: " + favs.prefix(40).map { "\($0.title) — \($0.artist)" }.joined(separator: "; "))
+        }
+        let pls = (try? await api.libraryPlaylists()) ?? []
+        if !pls.isEmpty {
+            parts.append("Her playlists: " + pls.prefix(30).map { $0.title }.joined(separator: "; "))
+        }
+        guard !parts.isEmpty else { return nil }
+        let text = "The user's own listening profile — ground your picks in what she actually listens to:\n" + parts.joined(separator: "\n")
+        cachedProfile = (text, Date())
+        return text
     }
 
     private func complete(messages: [[String: String]], key: String) async throws -> String {

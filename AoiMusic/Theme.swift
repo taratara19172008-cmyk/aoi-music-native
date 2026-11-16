@@ -85,7 +85,7 @@ enum Strings {
         "ai_ph": "想听点什么？", "ai_thinking": "正在为你挑歌…", "ai_save_pl": "存为歌单", "ai_rec": "AI 推荐", "ai_more": "换一批",
         "ai_key": "DeepSeek API Key", "ai_key_ph": "粘贴你的 DeepSeek key", "ai_key_saved": "Key 已保存",
         "ai_key_note": "只保存在这台手机上，用来调用 DeepSeek 生成推荐。不填的话 AI 功能不可用，其他功能不受影响。",
-        "ai_need_key": "先在设置里填入 DeepSeek API Key，AI 推荐才能工作", "ai_fail": "AI 刚才没回应，再试一次", "ai_no_match": "这次没在曲库里找到合适的歌，换个说法试试",
+        "more_by": "更多%@的作品", "latest_from": "%@的最新发行", "fans_also": "%@的粉丝也喜欢", "ai_need_key": "先在设置里填入 DeepSeek API Key，AI 推荐才能工作", "ai_fail": "AI 刚才没回应，再试一次", "ai_no_match": "这次没在曲库里找到合适的歌，换个说法试试", "ai_no_new": "没有更多新歌了",
     ]
     static let en: [String: String] = [
         "home": "Home", "search": "Search", "radio": "Radio", "library": "Library", "settings": "Settings",
@@ -122,7 +122,7 @@ enum Strings {
         "ai_ph": "What do you want to hear?", "ai_thinking": "Picking songs for you…", "ai_save_pl": "Save as Playlist", "ai_rec": "AI Picks", "ai_more": "Show Another Batch",
         "ai_key": "DeepSeek API Key", "ai_key_ph": "Paste your DeepSeek key", "ai_key_saved": "Key saved",
         "ai_key_note": "Stored only on this phone and used to call DeepSeek for recommendations. Without it the AI features stay off; everything else works as before.",
-        "ai_need_key": "Add your DeepSeek API Key in Settings to use AI picks", "ai_fail": "The AI didn't answer just now — try again", "ai_no_match": "No matching songs in the catalog this time — try describing it differently",
+        "more_by": "More by %@", "latest_from": "Latest from %@", "fans_also": "Fans of %@ also like", "ai_need_key": "Add your DeepSeek API Key in Settings to use AI picks", "ai_fail": "The AI didn't answer just now — try again", "ai_no_match": "No matching songs in the catalog this time — try describing it differently", "ai_no_new": "No more new songs to show",
     ]
     static func get(_ key: String, _ lang: String) -> String {
         if lang == "en" { return en[key] ?? zh[key] ?? key }
@@ -180,28 +180,66 @@ enum CoverPaletteLoader {
     }
 
     static func palette(from image: UIImage) -> CoverPalette {
-        let size = CGSize(width: 24, height: 24)
+        // v107 sampling: three signals instead of one blended average.
+        // (1) The dominant colour CLUSTER (quantized histogram) — the old
+        // whole-image average mixed subject and background into grey.
+        // (2) The cover's own EDGE colours — the page top continues the
+        // cover's top edge and the melt at the hero's foot continues its
+        // bottom edge, so image and page read as one surface.
+        // (3) The most vibrant cluster, kept for the page glow.
+        let size = CGSize(width: 32, height: 32)
         let renderer = UIGraphicsImageRenderer(size: size)
         let small = renderer.image { ctx in image.draw(in: CGRect(origin: .zero, size: size)) }
         guard let cg = small.cgImage, let data = cg.dataProvider?.data,
               let bytes = CFDataGetBytePtr(data) else { return .fallback }
         let bpp = cg.bitsPerPixel / 8
         let bpr = cg.bytesPerRow
-        var rSum = 0.0, gSum = 0.0, bSum = 0.0, n = 0.0
+        let W = Int(size.width), H = Int(size.height)
+        func px(_ x: Int, _ y: Int) -> (Double, Double, Double) {
+            let o = y * bpr + x * bpp
+            return (Double(bytes[o]) / 255, Double(bytes[o + 1]) / 255, Double(bytes[o + 2]) / 255)
+        }
+        var buckets: [Int: (r: Double, g: Double, b: Double, n: Double)] = [:]
         var vR = 0.0, vG = 0.0, vB = 0.0, vW = 0.0
-        for y in 0..<Int(size.height) {
-            for x in 0..<Int(size.width) {
-                let o = y * bpr + x * bpp
-                let r = Double(bytes[o]) / 255, g = Double(bytes[o + 1]) / 255, b = Double(bytes[o + 2]) / 255
-                rSum += r; gSum += g; bSum += b; n += 1
+        for y in 0..<H {
+            for x in 0..<W {
+                let (r, g, b) = px(x, y)
+                let key = Int(r * 5.99) * 36 + Int(g * 5.99) * 6 + Int(b * 5.99)
+                var bk = buckets[key] ?? (0, 0, 0, 0)
+                bk.r += r; bk.g += g; bk.b += b; bk.n += 1
+                buckets[key] = bk
                 let mx = max(r, g, b), mn = min(r, g, b)
                 let sat = mx > 0 ? (mx - mn) / mx : 0
                 let w = sat * sat * (0.35 + mx)
                 vR += r * w; vG += g * w; vB += b * w; vW += w
             }
         }
-        let avg = (rSum / n, gSum / n, bSum / n)
-        let vib = vW > 0.01 ? (vR / vW, vG / vW, vB / vW) : avg
+        func lumOf(_ bk: (r: Double, g: Double, b: Double, n: Double)) -> Double {
+            (0.2126 * bk.r + 0.7152 * bk.g + 0.0722 * bk.b) / bk.n
+        }
+        let byCount = buckets.values.sorted { $0.n > $1.n }
+        var dom = (0.5, 0.5, 0.5)
+        if let first = byCount.first {
+            dom = (first.r / first.n, first.g / first.n, first.b / first.n)
+            let fl = lumOf(first)
+            if fl > 0.92 || fl < 0.05,
+               let alt = byCount.first(where: { bk in
+                   let l = lumOf(bk)
+                   return l <= 0.92 && l >= 0.05 && bk.n >= first.n * 0.4
+               }) {
+                // A giant near-white/near-black field (plain covers) should
+                // not wash the whole page out when a real colour is close.
+                dom = (alt.r / alt.n, alt.g / alt.n, alt.b / alt.n)
+            }
+        }
+        let vib = vW > 0.01 ? (vR / vW, vG / vW, vB / vW) : dom
+        func edgeAvg(_ rows: [Int]) -> (Double, Double, Double) {
+            var r = 0.0, g = 0.0, b = 0.0, n = 0.0
+            for y in rows { for x in 0..<W { let c = px(x, y); r += c.0; g += c.1; b += c.2; n += 1 } }
+            return (r / n, g / n, b / n)
+        }
+        let edgeTop = edgeAvg([0, 1])
+        let edgeBot = edgeAvg([H - 2, H - 1])
         func mix(_ a: (Double, Double, Double), _ b: (Double, Double, Double), _ t: Double) -> (Double, Double, Double) {
             (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t)
         }
@@ -210,9 +248,9 @@ enum CoverPaletteLoader {
         }
         func col(_ c: (Double, Double, Double)) -> Color { Color(red: c.0, green: c.1, blue: c.2) }
         let white = (1.0, 1.0, 1.0)
-        let topC = mix(mix(vib, avg, 0.45), white, 0.22)
-        let botC = shade(mix(vib, avg, 0.55), 0.62)
-        let lum = 0.2126 * avg.0 + 0.7152 * avg.1 + 0.0722 * avg.2
+        let topC = mix(mix(edgeTop, dom, 0.35), white, 0.18)
+        let botC = shade(mix(edgeBot, dom, 0.45), 0.70)
+        let lum = 0.2126 * dom.0 + 0.7152 * dom.1 + 0.0722 * dom.2
         return CoverPalette(top: col(topC), bottom: col(botC), glow: col(vib), isDark: lum < 0.42)
     }
 }

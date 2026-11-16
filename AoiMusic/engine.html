@@ -51,9 +51,10 @@ function callMK(fn, ms, label) {
   return withTimeout(p, ms, label);
 }
 
-async function waitForTarget(targetId, ms) {
+async function waitForTarget(targetId, ms, stale) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
+    if (stale && stale()) return false;
     const it = music.nowPlayingItem;
     if (it && (!targetId || it.id === targetId) && (music.isPlaying || music.playbackState === 2)) return true;
     await new Promise(r => setTimeout(r, 200));
@@ -68,19 +69,24 @@ function queueIds() {
 
 async function startPlayback(intent) {
   wantPlaying = true;
+  const stale = () => intent.seq !== intentSeq;
   const targetId = intent.stationId ? null : intent.ids[intent.startIndex];
   const aim = intent.actualIndex != null ? intent.actualIndex : intent.startIndex;
   for (let attempt = 0; attempt < 2; attempt++) {
-    if (intent.seq !== intentSeq) return;
+    if (stale()) return;
     try { await callMK(() => music.play(), 6000, 'play'); } catch (e) { /* verified below */ }
-    if (intent.seq !== intentSeq) return;
-    if (await waitForTarget(targetId, 2600)) return;
-    if (intent.seq !== intentSeq) return;
-    if (!intent.stationId && aim > 0) {
+    if (stale()) return;
+    if (await waitForTarget(targetId, 2600, stale)) return;
+    if (stale()) return;
+    // play() alone resumes whatever item the player is already pointing
+    // at — the "tapped a song, still hearing the first one" bug, worst
+    // when the target sits at index 0 (the old code skipped the explicit
+    // jump exactly there). Force the position, index 0 included, retry.
+    if (!intent.stationId) {
       try { await callMK(() => music.changeToMediaAtIndex(aim), 5000, 'changeItem'); } catch (e) {}
     }
   }
-  if (intent.seq === intentSeq && targetId) {
+  if (!stale() && targetId) {
     post({ type: 'error', where: 'playQueue', message: 'playback did not reach target item' });
   }
 }
@@ -105,8 +111,17 @@ async function runIntent(intent) {
     music.shuffleMode = appShuffle ? 1 : 0;
     music.repeatMode = mkRepeat(appRepeat);
     const aim = intent.actualIndex != null ? intent.actualIndex : intent.startIndex;
-    if (!intent.stationId && aim > 0) {
-      try { await callMK(() => music.changeToMediaAtIndex(aim), 5000, 'changeItem'); } catch (e) {}
+    if (!intent.stationId) {
+      // setQueue's startIndex is ignored by MusicKit, so after a queue
+      // swap the player can still be pointing at the previous queue's
+      // item. Jump whenever the current position is not already the
+      // target — index 0 included (it used to be skipped, and play()
+      // then simply resumed the old song).
+      const cur = music.nowPlayingItem;
+      const curIdx = cur ? queueIds().indexOf(cur.id) : -1;
+      if (curIdx !== aim) {
+        try { await callMK(() => music.changeToMediaAtIndex(aim), 5000, 'changeItem'); } catch (e) {}
+      }
     }
     if (stale()) return;
     await startPlayback(intent);
@@ -175,8 +190,30 @@ function sendAuth() {
 }
 setInterval(() => {
   if (!music) return;
+  assertMediaSession();
   post({ type: 'progress', t: music.currentPlaybackTime || 0, d: music.currentPlaybackDuration || 0, isPlaying: !!music.isPlaying });
 }, 500);
+
+// ---------- lock screen / control centre buttons (v107) ----------
+// iOS picks the remote buttons from the handlers the page registers:
+// the web defaults surface ±10s seek buttons, while the official app
+// shows previous/next track. Registering track handlers (and clearing
+// the seek ones) makes the system offer track changes, like the
+// original. Re-asserted on the progress tick in case MusicKit rewrites
+// the handlers when a new item loads.
+function assertMediaSession() {
+  try {
+    if (!music || !('mediaSession' in navigator)) return;
+    const ms = navigator.mediaSession;
+    ms.setActionHandler('previoustrack', () => { window.AoiEngine.prev(); });
+    ms.setActionHandler('nexttrack', () => { window.AoiEngine.next(); });
+    ms.setActionHandler('seekforward', null);
+    ms.setActionHandler('seekbackward', null);
+    ms.setActionHandler('seekto', d => { if (d && typeof d.seekTime === 'number') window.AoiEngine.seek(d.seekTime); });
+    ms.setActionHandler('play', () => { window.AoiEngine.play(); });
+    ms.setActionHandler('pause', () => { window.AoiEngine.pause(); });
+  } catch (e) {}
+}
 
 let mkInitStarted = false;
 async function initMK() {
@@ -230,10 +267,20 @@ window.AoiEngine = {
   pause() { wantPlaying = false; if (music) { try { const p = music.pause(); if (p && p.catch) p.catch(() => {}); } catch (e) {} } },
   next() { if (music) callMK(() => music.skipToNextItem(), 5000, 'next').catch(() => {}); },
   prev() { if (music) callMK(() => music.skipToPreviousItem(), 5000, 'prev').catch(() => {}); },
-  jumpTo(i) {
+  jumpTo(i, expectedId) {
     if (!music) return;
-    callMK(() => music.changeToMediaAtIndex(i | 0), 5000, 'changeItem')
-      .then(() => { if (wantPlaying && !music.isPlaying) return callMK(() => music.play(), 6000, 'play'); })
+    const idx = i | 0;
+    const go = () => callMK(() => music.changeToMediaAtIndex(idx), 5000, 'changeItem');
+    go()
+      .then(async () => {
+        // A jump MusicKit silently swallows looks exactly like the old
+        // "tapped another song, first song keeps playing" — verify the
+        // landing item and jump once more if it is not the target.
+        if (expectedId && !(await waitForTarget(expectedId, 1500, null))) {
+          await go().catch(() => {});
+        }
+        if (wantPlaying && !music.isPlaying) return callMK(() => music.play(), 6000, 'play');
+      })
       .catch(() => {});
   },
   seek(sec) { if (music) { try { music.seekToTime(Number(sec) || 0); } catch (e) {} } },

@@ -127,8 +127,8 @@ final class APIClient: ObservableObject {
         return d
     }
 
-    func recentPlayed() async throws -> [Song] {
-        let r: RecentPlayedResponse = try await get("/v1/me/recent/played/tracks?limit=10")
+    func recentPlayed(limit: Int = 10) async throws -> [Song] {
+        let r: RecentPlayedResponse = try await get("/v1/me/recent/played/tracks?limit=\(limit)")
         return r.data ?? []
     }
 
