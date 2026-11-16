@@ -1,14 +1,14 @@
 import SwiftUI
 
 enum Page: String, CaseIterable {
-    case home, search, radio, library, downloads, settings
+    case home, search, radio, library, favorites, settings
     var icon: String {
         switch self {
         case .home: return "house.fill"
         case .search: return "magnifyingglass"
         case .radio: return "dot.radiowaves.left.and.right"
         case .library: return "square.grid.2x2.fill"
-        case .downloads: return "arrow.down.circle.fill"
+        case .favorites: return "heart.fill"
         case .settings: return "gearshape.fill"
         }
     }
@@ -204,7 +204,7 @@ struct RootView: View {
 
     private var railSegmentBottom: some View {
         VStack(spacing: 6) {
-            railButton(.downloads)
+            railButton(.favorites)
             railButton(.settings)
         }
         .frame(width: 74)
@@ -246,7 +246,7 @@ struct RootView: View {
         case .search: SearchView()
         case .radio: RadioView()
         case .library: LibraryView()
-        case .downloads: DownloadsView()
+        case .favorites: FavoritesView()
         case .settings: SettingsView()
         }
     }
