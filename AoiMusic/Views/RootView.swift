@@ -27,9 +27,11 @@ struct RootView: View {
             HStack(spacing: 10) {
                 rail
                 content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .padding(.leading, 8)
             .padding(.trailing, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             VStack {
                 Spacer()
                 if player.current != nil {
@@ -70,6 +72,8 @@ struct RootView: View {
             Circle().fill(Color(red: 0.45, green: 0.75, blue: 0.95).opacity(0.22)).frame(width: 280, height: 280).blur(radius: 70).offset(x: 150, y: 240)
             Circle().fill(Color(red: 1.0, green: 0.72, blue: 0.55).opacity(0.16)).frame(width: 240, height: 240).blur(radius: 70).offset(x: 120, y: -180)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
         .ignoresSafeArea()
     }
 
