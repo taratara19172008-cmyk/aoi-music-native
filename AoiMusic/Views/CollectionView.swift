@@ -24,10 +24,11 @@ struct CollectionView: View {
                 .ignoresSafeArea()
             VStack(spacing: 0) {
                 HStack {
-                    Button { dismiss() } label: {
+                    Button { nav.detail = nil } label: {
                         Label(settings.t("back"), systemImage: "chevron.left")
                             .font(.subheadline.weight(.semibold))
                     }
+                    .buttonStyle(.plain)
                     .foregroundStyle(.primary)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
