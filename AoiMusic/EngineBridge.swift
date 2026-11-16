@@ -31,12 +31,13 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
         let ucc = WKUserContentController()
+        config.userContentController = ucc
         webView = WKWebView(frame: .zero, configuration: config)
         super.init()
         ucc.add(self, name: "aoi")
         webView.uiDelegate = self
-        webView.isHidden = true
         webView.load(URLRequest(url: Self.engineURL))
     }
 
