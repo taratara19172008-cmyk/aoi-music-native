@@ -26,7 +26,7 @@ struct RadioView: View {
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                     ForEach(items) { item in
-                        CollectionCard(item: item, width: 160)
+                        CollectionCard(item: item, width: 0)
                             .onTapGesture { tap(item) }
                     }
                 }
