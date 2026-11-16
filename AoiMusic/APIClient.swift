@@ -76,7 +76,24 @@ final class APIClient: ObservableObject {
 
     func artistDetail(id: String) async throws -> ArtistDetailResponse.ArtistDetail? {
         let r: ArtistDetailResponse = try await get("/v1/catalog/\(storefront)/artists/\(id)?views=top-songs,albums,playlists,similar-artists")
-        return r.data?.first
+        guard var d = r.data?.first else { return nil }
+        // views/relationships return id-only stubs for albums & playlists (no name/artwork);
+        // fetch the full resources from the relationship endpoints instead.
+        if d.views?.albums?.data?.first?.attributes?.artwork?.url == nil {
+            let albums: ListResponse<CollectionItem>? = try? await get("/v1/catalog/\(storefront)/artists/\(id)/albums?limit=24")
+            if let albums = albums, !(albums.data ?? []).isEmpty {
+                if d.views == nil { d.views = ArtistDetailResponse.ArtistDetail.Views() }
+                d.views?.albums = albums
+            }
+        }
+        if d.views?.playlists?.data?.first?.attributes?.artwork?.url == nil {
+            let pls: ListResponse<CollectionItem>? = try? await get("/v1/catalog/\(storefront)/artists/\(id)/playlists?limit=12")
+            if let pls = pls, !(pls.data ?? []).isEmpty {
+                if d.views == nil { d.views = ArtistDetailResponse.ArtistDetail.Views() }
+                d.views?.playlists = pls
+            }
+        }
+        return d
     }
 
     func recentPlayed() async throws -> [Song] {
