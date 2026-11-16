@@ -32,6 +32,7 @@ struct NowPlayingView: View {
     var body: some View {
         ZStack {
             background
+                .frame(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
             VStack(spacing: 12) {
                 Capsule()
                     .fill(Color.white.opacity(0.5))
@@ -43,13 +44,12 @@ struct NowPlayingView: View {
                 seekBar
                 controls
                 VolumeView()
-                    .frame(height: 30)
-                    .padding(.horizontal, 26)
+                    .frame(width: UIScreen.main.bounds.width - 88, height: 30)
                 pills
                 Spacer(minLength: 6)
             }
             .padding(.horizontal, 22)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
             ToastOverlay(text: player.toast)
         }
         .onChange(of: player.current?.id) { _ in loadLyrics() }
