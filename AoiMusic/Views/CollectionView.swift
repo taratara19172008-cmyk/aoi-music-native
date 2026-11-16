@@ -6,7 +6,6 @@ struct CollectionView: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var engine: EngineBridge
     @EnvironmentObject var nav: AppNav
-    @EnvironmentObject var downloads: DownloadManager
     @Environment(\.dismiss) var dismiss
     var kind: String // album | playlist | lplaylist
     var id: String
@@ -15,6 +14,7 @@ struct CollectionView: View {
     @State private var loaded = false
     @State private var albumFav = false
     @State private var addSong: Song?
+    @State private var shareItem: ShareItem?
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showDeleteConfirm = false
@@ -51,14 +51,16 @@ struct CollectionView: View {
                     List {
                         heroSection
                         ForEach(Array(tracks.enumerated()), id: \.element.id) { i, s in
-                            SongRow(song: s, index: i, onTap: { player.playSongs(tracks, start: i) }, onAdd: { addSong = s }, showDownload: true)
+                            SongRow(song: s, index: i, onTap: { player.playSongs(tracks, start: i) }, onAdd: { addSong = s }, showShare: true)
                                 .listRowSeparator(.hidden)
                                 .listRowBackground(Color.clear)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button { downloads.download(s); player.showToast(settings.t("downloading")) } label: {
-                                        Label(settings.t("downloads"), systemImage: "arrow.down.circle")
+                                    Button {
+                                        if let u = s.attributes?.url, let url = URL(string: u) { shareItem = ShareItem(url: url) }
+                                    } label: {
+                                        Label(settings.t("share"), systemImage: "square.and.arrow.up")
                                     }
-                                    .tint(.blue)
+                                    .tint(.gray)
                                     if kind == "lplaylist" {
                                         Button(role: .destructive) { removeTrack(s) } label: {
                                             Label(settings.t("del"), systemImage: "trash")
@@ -75,6 +77,7 @@ struct CollectionView: View {
         }
         .task { await load() }
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
+        .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
         .alert(settings.t("edit_name"), isPresented: $showRename) {
             TextField(settings.t("playlist_name_ph"), text: $renameText)
             Button(settings.t("cancel"), role: .cancel) {}
