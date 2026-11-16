@@ -92,16 +92,6 @@ private struct GlassCircle: ViewModifier {
     }
 }
 
-private struct AccentedDesat: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.widgetAccentedRenderingMode(.desaturated)
-        } else {
-            content
-        }
-    }
-}
-
 struct NPWidgetView: View {
     var entry: NPEntry
 
@@ -130,7 +120,6 @@ struct NPWidgetView: View {
             Image(uiImage: img)
                 .resizable()
                 .scaledToFill()
-                .modifier(AccentedDesat())
         } else {
             ZStack {
                 LinearGradient(colors: [Color(red: 0.98, green: 0.30, blue: 0.42),
