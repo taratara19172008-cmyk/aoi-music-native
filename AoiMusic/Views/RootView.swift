@@ -79,9 +79,9 @@ struct RootView: View {
                         .clipped()
                     Color.white.opacity(0.22)
                 }
-                Circle().fill(settings.accent.opacity(0.20)).frame(width: 300, height: 300).blur(radius: 70).offset(x: -130, y: -260)
-                Circle().fill(Color(red: 0.45, green: 0.75, blue: 0.95).opacity(0.22)).frame(width: 280, height: 280).blur(radius: 70).offset(x: 150, y: 240)
-                Circle().fill(Color(red: 1.0, green: 0.72, blue: 0.55).opacity(0.16)).frame(width: 240, height: 240).blur(radius: 70).offset(x: 120, y: -180)
+                Circle().fill(settings.accent.opacity(0.38)).frame(width: 320, height: 320).blur(radius: 75).offset(x: -130, y: -260)
+                Circle().fill(Color(red: 0.45, green: 0.75, blue: 0.95).opacity(0.34)).frame(width: 300, height: 300).blur(radius: 75).offset(x: 150, y: 240)
+                Circle().fill(Color(red: 1.0, green: 0.72, blue: 0.55).opacity(0.26)).frame(width: 260, height: 260).blur(radius: 75).offset(x: 120, y: -180)
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }

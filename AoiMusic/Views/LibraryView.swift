@@ -37,25 +37,21 @@ struct LibraryView: View {
                         .foregroundStyle(settings.accent)
                         .padding(.top, 18)
                     }
-                    hGrid(playlists) { p in
-                        libRow(p) { nav.detail = .collection(kind: "lplaylist", id: p.id) }
+                    GlassSection {
+                        railGrid(playlists) { p in
+                            libRow(p) { nav.detail = .collection(kind: "lplaylist", id: p.id) }
+                        }
                     }
                     if !songs.isEmpty {
-                        SectionTitle(text: settings.t("lib_songs"))
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHGrid(rows: Array(repeating: GridItem(.fixed(76), spacing: 6), count: 3), spacing: 14) {
-                                ForEach(Array(songs.enumerated()), id: \.element.id) { i, s in
-                                    SongRow(song: s, index: i, onTap: { player.playSongs(songs, start: i) }, onAdd: { addSong = s }, rail: true)
-                                        .frame(width: colW)
-                                }
-                            }
-                            .padding(.vertical, 4)
+                        GlassSection(title: settings.t("lib_songs")) {
+                            songRail(songs)
                         }
                     }
                     if !artists.isEmpty {
-                        SectionTitle(text: settings.t("lib_artists"))
-                        hGrid(artists) { a in
-                            libRow(a, artist: true) { nav.detail = .artist(id: a.id) }
+                        GlassSection(title: settings.t("lib_artists")) {
+                            railGrid(artists) { a in
+                                libRow(a, artist: true) { nav.detail = .artist(id: a.id) }
+                            }
                         }
                     }
                 }
@@ -73,10 +69,36 @@ struct LibraryView: View {
 
     private var colW: CGFloat { UIScreen.main.bounds.width - 100 }
 
-    private func hGrid(_ items: [CollectionItem], cell: @escaping (CollectionItem) -> some View) -> some View {
+    // Deterministic 3-row rails (v105): chunked columns in a plain HStack.
+    // The old LazyHGrid measured itself against the page's leftover height,
+    // which is what scattered the artists down the page with a huge blank
+    // gap under the title. Fixed chunks cannot drift.
+    private func railGrid(_ items: [CollectionItem], cell: @escaping (CollectionItem) -> some View) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHGrid(rows: Array(repeating: GridItem(.fixed(64), spacing: 8), count: 3), spacing: 14) {
-                ForEach(items) { item in cell(item) }
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(Array(stride(from: 0, to: items.count, by: 3)), id: \.self) { start in
+                    VStack(spacing: 8) {
+                        ForEach(items[start..<min(start + 3, items.count)]) { item in
+                            cell(item)
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func songRail(_ songs: [Song]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(Array(stride(from: 0, to: songs.count, by: 3)), id: \.self) { start in
+                    VStack(spacing: 6) {
+                        ForEach(Array(songs[start..<min(start + 3, songs.count)].enumerated()), id: \.element.id) { off, s in
+                            SongRow(song: s, index: start + off, onTap: { player.playSongs(songs, start: start + off) }, onAdd: { addSong = s }, rail: true)
+                                .frame(width: colW)
+                        }
+                    }
+                }
             }
             .padding(.vertical, 4)
         }
@@ -84,7 +106,20 @@ struct LibraryView: View {
 
     private func libRow(_ item: CollectionItem, artist: Bool = false, tap: @escaping () -> Void) -> some View {
         HStack(spacing: 10) {
-            ArtworkImage(urlString: item.art(120, 120), size: 46, corner: artist ? 23 : 8)
+            if artist && item.art(120, 120) == nil {
+                // No catalog photo for this artist: a tinted initial medallion
+                // instead of the bare note placeholder.
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(colors: [settings.accent.opacity(0.8), settings.accent.opacity(0.35)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Text(String(item.title.prefix(1)))
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 46, height: 46)
+            } else {
+                ArtworkImage(urlString: item.art(120, 120), size: 46, corner: artist ? 23 : 8)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
                     .font(.subheadline.weight(.medium))

@@ -42,27 +42,32 @@ struct HomeView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 if !featPlaylists.isEmpty {
-                    SectionTitle(text: settings.t("rec_playlists"))
-                    shelf(featPlaylists) { item in tap(item) }
+                    GlassSection(title: settings.t("rec_playlists")) {
+                        shelf(featPlaylists) { item in tap(item) }
+                    }
                 }
                 if !recSongs.isEmpty {
-                    SectionTitle(text: settings.t("rec_songs"))
-                    songRail(recSongs)
+                    GlassSection(title: settings.t("rec_songs")) {
+                        songRail(recSongs)
+                    }
                 }
                 if !topSongs.isEmpty {
-                    SectionTitle(text: settings.t("top_songs"))
-                    songRail(topSongs)
+                    GlassSection(title: settings.t("top_songs")) {
+                        songRail(topSongs)
+                    }
                 }
                 if !topAlbums.isEmpty {
-                    SectionTitle(text: settings.t("top_albums"))
-                    shelf(topAlbums) { a in nav.detail = .collection(kind: "album", id: a.id) }
+                    GlassSection(title: settings.t("top_albums")) {
+                        shelf(topAlbums) { a in nav.detail = .collection(kind: "album", id: a.id) }
+                    }
                 }
                 ForEach(Array(groups.enumerated()), id: \.offset) { _, g in
-                    SectionTitle(text: g.title.isEmpty ? settings.t("feat_playlists") : g.title)
-                    shelf(g.items) { item in tap(item) }
+                    GlassSection(title: g.title.isEmpty ? settings.t("feat_playlists") : g.title) {
+                        shelf(g.items) { item in tap(item) }
+                    }
                 }
                 if !mergedHistory.isEmpty {
-                    SectionTitle(text: settings.t("recent_played"))
+                    GlassSection(title: settings.t("recent_played")) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(alignment: .top, spacing: 14) {
                             ForEach(Array(mergedHistory.enumerated()), id: \.element.id) { i, s in
@@ -70,6 +75,7 @@ struct HomeView: View {
                             }
                         }
                         .padding(.horizontal, 2)
+                    }
                     }
                 }
                 if !loaded {
@@ -98,11 +104,17 @@ struct HomeView: View {
     }
 
     private func songRail(_ songs: [Song]) -> some View {
+        // Deterministic chunked columns, same as the Library rails (v105) —
+        // no LazyHGrid measurement surprises.
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHGrid(rows: Array(repeating: GridItem(.fixed(76), spacing: 6), count: 3), spacing: 14) {
-                ForEach(Array(songs.enumerated()), id: \.element.id) { i, s in
-                    SongRow(song: s, index: i, onTap: { player.playSongs(songs, start: i) }, onAdd: { addSong = s }, rail: true)
-                        .frame(width: colW)
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(Array(stride(from: 0, to: songs.count, by: 3)), id: \.self) { start in
+                    VStack(spacing: 6) {
+                        ForEach(Array(songs[start..<min(start + 3, songs.count)].enumerated()), id: \.element.id) { off, s in
+                            SongRow(song: s, index: start + off, onTap: { player.playSongs(songs, start: start + off) }, onAdd: { addSong = s }, rail: true)
+                                .frame(width: colW)
+                        }
+                    }
                 }
             }
             .padding(.vertical, 4)

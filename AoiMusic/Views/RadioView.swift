@@ -28,19 +28,21 @@ struct RadioView: View {
                     Text(settings.t("empty")).foregroundStyle(.secondary).padding(.top, 30)
                 }
                 if !stations.isEmpty {
-                    SectionTitle(text: settings.t("official_stations"))
-                    LazyVGrid(columns: gridCols, spacing: 16) {
-                        ForEach(stations) { item in
-                            stationCard(item)
+                    GlassSection(title: settings.t("official_stations")) {
+                        LazyVGrid(columns: gridCols, spacing: 16) {
+                            ForEach(stations) { item in
+                                stationCard(item)
+                            }
                         }
                     }
                 }
                 if !playlists.isEmpty {
-                    SectionTitle(text: settings.t("feat_playlists"))
-                    LazyVGrid(columns: gridCols, spacing: 16) {
-                        ForEach(playlists) { item in
-                            CollectionCard(item: item, width: 0)
-                                .onTapGesture { tap(item) }
+                    GlassSection(title: settings.t("feat_playlists")) {
+                        LazyVGrid(columns: gridCols, spacing: 16) {
+                            ForEach(playlists) { item in
+                                CollectionCard(item: item, width: 0)
+                                    .onTapGesture { tap(item) }
+                            }
                         }
                     }
                 }

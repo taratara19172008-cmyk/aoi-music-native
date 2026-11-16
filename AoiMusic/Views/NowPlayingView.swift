@@ -30,14 +30,18 @@ struct NowPlayingView: View {
     @State private var lyricsSongId: String = ""
     @State private var motionURLStr: String?
     @State private var motionSongId: String = ""
+    @State private var palette: CoverPalette?
+
+    // Text follows the cover: white on dark covers, ink on light ones.
+    private var fg: Color { palette?.isDark == false ? Color(red: 0.10, green: 0.10, blue: 0.12) : .white }
+    private var fgDim: Color { fg.opacity(0.65) }
 
     var body: some View {
         ZStack {
             background
-                .frame(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
             VStack(spacing: 12) {
                 Capsule()
-                    .fill(Color.white.opacity(0.5))
+                    .fill(fg.opacity(0.5))
                     .frame(width: 44, height: 5)
                     .padding(.top, 10)
                     .onTapGesture { nav.showNowPlaying = false }
@@ -58,31 +62,25 @@ struct NowPlayingView: View {
             .frame(maxHeight: .infinity)
             ToastOverlay(text: player.toast)
         }
-        .onChange(of: player.current?.id) { _ in loadLyrics(); loadMotion() }
-        .onAppear { loadLyrics(); loadMotion() }
+        .onChange(of: player.current?.id) { _ in loadLyrics(); loadMotion(); loadPalette() }
+        .onAppear { loadLyrics(); loadMotion(); loadPalette() }
     }
 
-    // The cover is the background now: full-bleed artwork — or the album's motion
-    // artwork video when it has one — with a scrim so the controls stay readable.
+    // v105: the background is a gradient grown out of the cover's dominant
+    // colours (plus a soft glow of the cover's most vibrant colour) - the
+    // cover itself is back to its original boxed size in the middle panel.
     private var background: some View {
         ZStack {
-            Color(red: 0.16, green: 0.12, blue: 0.18)
-            if let m = motionURLStr, let u = URL(string: m) {
-                LoopingVideo(url: u)
-            } else if let s = player.current?.art(800, 800), let url = URL(string: s) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    default: Color.clear
-                    }
-                }
-            }
             LinearGradient(
-                colors: [Color.black.opacity(0.30), Color.black.opacity(0.10), Color.black.opacity(0.55)],
+                colors: [palette?.top ?? Color(red: 0.25, green: 0.20, blue: 0.30),
+                         palette?.bottom ?? Color(red: 0.12, green: 0.10, blue: 0.16)],
                 startPoint: .top, endPoint: .bottom)
+            Circle()
+                .fill((palette?.glow ?? settings.accent).opacity(0.40))
+                .frame(width: 340, height: 340)
+                .blur(radius: 90)
+                .offset(x: 130, y: -300)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
         .ignoresSafeArea()
     }
 
@@ -92,10 +90,17 @@ struct NowPlayingView: View {
         case 1: lyricsView
         case 2: queueView
         default:
-            // No boxed artwork anymore — the cover fills the background behind
-            // everything; this panel just holds the space.
-            Color.clear
-                .frame(height: 320)
+            ZStack {
+                if let m = motionURLStr, let u = URL(string: m) {
+                    LoopingVideo(url: u)
+                        .frame(width: 320, height: 320)
+                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                } else {
+                    ArtworkImage(urlString: player.current?.art(800, 800), size: 320, corner: 24)
+                }
+            }
+            .shadow(color: Color.black.opacity(0.30), radius: 24, y: 12)
+            .frame(height: 320)
         }
     }
 
@@ -105,13 +110,13 @@ struct NowPlayingView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if lyrics.isEmpty {
                         Text(lyricsNote.isEmpty ? settings.t("no_lyrics") : lyricsNote)
-                            .foregroundStyle(.white.opacity(0.75))
+                            .foregroundStyle(fgDim)
                             .padding(.top, 30)
                     }
                     ForEach(lyrics) { line in
                         Text(line.text)
                             .font(.system(size: 19, weight: .bold))
-                            .foregroundStyle(currentLineId == line.id ? Color.white : Color.white.opacity(0.45))
+                            .foregroundStyle(currentLineId == line.id ? fg : fg.opacity(0.45))
                             .id(line.id)
                     }
                 }
@@ -135,15 +140,15 @@ struct NowPlayingView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(settings.t("queue_title")) · \(player.queue.count)")
                     .font(.headline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(fg)
                     .padding(.bottom, 6)
                 ForEach(Array(player.queue.enumerated()), id: \.element.id) { i, s in
                     HStack(spacing: 10) {
                         ArtworkImage(urlString: s.art(120, 120), size: 40, corner: 7)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(s.title).font(.subheadline.weight(.semibold)).lineLimit(2)
-                                .foregroundStyle(i == player.index ? settings.accent : .white)
-                            Text(s.artist).font(.caption).foregroundStyle(.white.opacity(0.6)).lineLimit(2)
+                                .foregroundStyle(i == player.index ? settings.accent : fg)
+                            Text(s.artist).font(.caption).foregroundStyle(fgDim).lineLimit(2)
                         }
                         Spacer()
                         if i == player.index {
@@ -200,7 +205,7 @@ struct NowPlayingView: View {
                 Button { openAlbum() } label: {
                     Text(player.current?.title ?? "—")
                         .font(.system(size: 21, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(fg)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
@@ -209,7 +214,7 @@ struct NowPlayingView: View {
                 Button { openArtist() } label: {
                     Text(player.current?.artist ?? "—")
                         .font(.system(size: 18))
-                        .foregroundStyle(Color.white.opacity(0.65))
+                        .foregroundStyle(fgDim)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
@@ -222,7 +227,7 @@ struct NowPlayingView: View {
                 ShareLink(item: URL(string: cur.attributes?.url ?? "https://music.apple.com/\(api.storefront)/song/\(cur.playbackId)")!) {
                     Image(systemName: "square.and.arrow.up")
                         .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(fg)
                         .frame(width: 46, height: 46)
                         .aoiGlass(corner: 14, interactive: true)
                 }
@@ -230,7 +235,7 @@ struct NowPlayingView: View {
                 Button { player.toggleFav(cur, lang: settings.lang) } label: {
                     Image(systemName: player.isFav(cur) ? "heart.fill" : "heart")
                         .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(player.isFav(cur) ? settings.accent : .white)
+                        .foregroundStyle(player.isFav(cur) ? settings.accent : fg)
                         .frame(width: 46, height: 46)
                         .aoiGlass(corner: 14, interactive: true)
                 }
@@ -249,14 +254,14 @@ struct NowPlayingView: View {
                 if editing { scrubbing = true; scrubValue = player.currentTime }
                 else { scrubbing = false; player.seek(scrubValue) }
             }
-            .tint(.white)
+            .tint(fg)
             HStack {
-                Text(fmt(player.currentTime)).font(.caption).foregroundStyle(.white.opacity(0.7))
+                Text(fmt(player.currentTime)).font(.caption).foregroundStyle(fg.opacity(0.7))
                 Spacer()
                 Text(player.useEngine ? settings.t("full") : settings.t("preview"))
-                    .font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.7))
+                    .font(.caption.weight(.medium)).foregroundStyle(fg.opacity(0.7))
                 Spacer()
-                Text("-" + fmt(max(player.duration - player.currentTime, 0))).font(.caption).foregroundStyle(.white.opacity(0.7))
+                Text("-" + fmt(max(player.duration - player.currentTime, 0))).font(.caption).foregroundStyle(fg.opacity(0.7))
             }
         }
     }
@@ -268,7 +273,7 @@ struct NowPlayingView: View {
             Button { player.togglePlay() } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 30, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(fg)
                     .frame(width: 74, height: 74)
                     .aoiGlass(corner: 24, interactive: true)
             }
@@ -293,7 +298,7 @@ struct NowPlayingView: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(on ? settings.accent : .white)
+                .foregroundStyle(on ? settings.accent : fg)
                 .frame(width: 52, height: 52)
                 .aoiGlass(corner: 17, interactive: true)
         }
@@ -313,7 +318,7 @@ struct NowPlayingView: View {
         Button(action: action) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(active ? settings.accent : .white)
+                .foregroundStyle(active ? settings.accent : fg)
                 .padding(.horizontal, 16)
                 .frame(height: 36)
                 .aoiGlass(corner: 18, interactive: true)
@@ -324,6 +329,16 @@ struct NowPlayingView: View {
     private func fmt(_ sec: Double) -> String {
         let s = Int(sec.rounded())
         return "\(s / 60):\(String(format: "%02d", s % 60))"
+    }
+
+    private func loadPalette() {
+        guard let cur = player.current else { return }
+        let art = cur.art(600, 600)
+        Task {
+            if let p = await CoverPaletteLoader.load(art), player.current?.id == cur.id {
+                palette = p
+            }
+        }
     }
 
     private func loadMotion() {

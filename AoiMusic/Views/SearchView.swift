@@ -44,8 +44,10 @@ struct SearchView: View {
                                 .foregroundStyle(settings.accent)
                                 .padding(.top, 18)
                         }
-                        ForEach(player.searchHistory) { e in
-                            historyRow(e)
+                        GlassSection {
+                            ForEach(player.searchHistory) { e in
+                                historyRow(e)
+                            }
                         }
                     }
                 } else if searching {
@@ -54,50 +56,54 @@ struct SearchView: View {
                     Text(settings.t("no_results")).foregroundStyle(.secondary).padding(.top, 40).frame(maxWidth: .infinity)
                 } else {
                     if !artists.isEmpty {
-                        SectionTitle(text: settings.t("artists"))
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 14) {
-                                ForEach(artists) { a in
-                                    CollectionCard(item: a)
-                                        .onTapGesture {
-                                            player.recordSearch(.init(kind: "artist", id: a.id, name: a.title, sub: a.sub, art: a.art(160, 160), song: nil))
-                                            nav.detail = .artist(id: a.id)
-                                        }
+                        GlassSection(title: settings.t("artists")) {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 14) {
+                                    ForEach(artists) { a in
+                                        CollectionCard(item: a)
+                                            .onTapGesture {
+                                                player.recordSearch(.init(kind: "artist", id: a.id, name: a.title, sub: a.sub, art: a.art(160, 160), song: nil))
+                                                nav.detail = .artist(id: a.id)
+                                            }
+                                    }
                                 }
+                                .padding(.horizontal, 2)
                             }
-                            .padding(.horizontal, 2)
                         }
                     }
                     if !songs.isEmpty {
-                        SectionTitle(text: settings.t("songs"))
-                        ForEach(Array(songs.enumerated()), id: \.element.id) { i, s in
-                            SongRow(song: s, index: i, onTap: {
-                                player.recordSearch(.init(kind: "song", id: s.id, name: s.title, sub: s.artist, art: s.art(160, 160), song: s))
-                                player.playSongs(songs, start: i)
-                            }, onAdd: { addSong = s })
+                        GlassSection(title: settings.t("songs")) {
+                            ForEach(Array(songs.enumerated()), id: \.element.id) { i, s in
+                                SongRow(song: s, index: i, onTap: {
+                                    player.recordSearch(.init(kind: "song", id: s.id, name: s.title, sub: s.artist, art: s.art(160, 160), song: s))
+                                    player.playSongs(songs, start: i)
+                                }, onAdd: { addSong = s })
+                            }
                         }
                     }
                     if !albums.isEmpty {
-                        SectionTitle(text: settings.t("albums"))
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                            ForEach(albums) { a in
-                                CollectionCard(item: a, width: 0)
-                                    .onTapGesture {
-                                        player.recordSearch(.init(kind: "album", id: a.id, name: a.title, sub: a.sub, art: a.art(160, 160), song: nil))
-                                        nav.detail = .collection(kind: "album", id: a.id)
-                                    }
+                        GlassSection(title: settings.t("albums")) {
+                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                                ForEach(albums) { a in
+                                    CollectionCard(item: a, width: 0)
+                                        .onTapGesture {
+                                            player.recordSearch(.init(kind: "album", id: a.id, name: a.title, sub: a.sub, art: a.art(160, 160), song: nil))
+                                            nav.detail = .collection(kind: "album", id: a.id)
+                                        }
+                                }
                             }
                         }
                     }
                     if !playlists.isEmpty {
-                        SectionTitle(text: settings.t("playlists"))
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                            ForEach(playlists) { p in
-                                CollectionCard(item: p, width: 0)
-                                    .onTapGesture {
-                                        player.recordSearch(.init(kind: "playlist", id: p.id, name: p.title, sub: p.sub, art: p.art(160, 160), song: nil))
-                                        nav.detail = .collection(kind: "playlist", id: p.id)
-                                    }
+                        GlassSection(title: settings.t("playlists")) {
+                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                                ForEach(playlists) { p in
+                                    CollectionCard(item: p, width: 0)
+                                        .onTapGesture {
+                                            player.recordSearch(.init(kind: "playlist", id: p.id, name: p.title, sub: p.sub, art: p.art(160, 160), song: nil))
+                                            nav.detail = .collection(kind: "playlist", id: p.id)
+                                        }
+                                }
                             }
                         }
                     }

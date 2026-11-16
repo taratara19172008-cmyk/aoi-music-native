@@ -41,56 +41,61 @@ struct ArtistView: View {
                             }
                             .padding(.top, 10)
                             if let tops = d.views?.topSongs?.data, !tops.isEmpty {
-                                SectionTitle(text: settings.t("top_songs_a"))
-                                ForEach(Array(tops.enumerated()), id: \.element.id) { i, s in
-                                    SongRow(song: s, index: i, onTap: { player.playSongs(tops, start: i) }, onAdd: { addSong = s })
+                                GlassSection(title: settings.t("top_songs_a")) {
+                                    ForEach(Array(tops.enumerated()), id: \.element.id) { i, s in
+                                        SongRow(song: s, index: i, onTap: { player.playSongs(tops, start: i) }, onAdd: { addSong = s })
+                                    }
                                 }
                             }
                             if let albums = d.views?.albums?.data ?? d.relationships?.albums?.data, !albums.isEmpty {
-                                SectionTitle(text: settings.t("albums"))
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 14) {
-                                        ForEach(albums) { a in
-                                            CollectionCard(item: a)
-                                                .onTapGesture { nav.detail = .collection(kind: "album", id: a.id) }
+                                GlassSection(title: settings.t("albums")) {
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 14) {
+                                            ForEach(albums) { a in
+                                                CollectionCard(item: a)
+                                                    .onTapGesture { nav.detail = .collection(kind: "album", id: a.id) }
+                                            }
                                         }
+                                        .padding(.horizontal, 2)
                                     }
-                                    .padding(.horizontal, 2)
                                 }
                             }
                             if !videos.isEmpty {
-                                SectionTitle(text: settings.t("music_videos"))
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(alignment: .top, spacing: 14) {
-                                        ForEach(videos) { v in
-                                            mvCard(v)
+                                GlassSection(title: settings.t("music_videos")) {
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(alignment: .top, spacing: 14) {
+                                            ForEach(videos) { v in
+                                                mvCard(v)
+                                            }
                                         }
+                                        .padding(.horizontal, 2)
                                     }
-                                    .padding(.horizontal, 2)
                                 }
                             }
                             if let pls = d.views?.playlists?.data ?? d.relationships?.playlists?.data, !pls.isEmpty {
-                                SectionTitle(text: settings.t("playlists"))
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 14) {
-                                        ForEach(pls) { p in
-                                            CollectionCard(item: p)
-                                                .onTapGesture { nav.detail = .collection(kind: "playlist", id: p.id) }
+                                GlassSection(title: settings.t("playlists")) {
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 14) {
+                                            ForEach(pls) { p in
+                                                CollectionCard(item: p)
+                                                    .onTapGesture { nav.detail = .collection(kind: "playlist", id: p.id) }
+                                            }
                                         }
+                                        .padding(.horizontal, 2)
                                     }
-                                    .padding(.horizontal, 2)
                                 }
                             }
                             if let sims = d.views?.similarArtists?.data, !sims.isEmpty {
-                                SectionTitle(text: settings.t("similar"))
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 14) {
-                                        ForEach(sims) { a in
-                                            CollectionCard(item: a)
-                                                .onTapGesture { nav.detail = .artist(id: a.id) }
+                                GlassSection(title: settings.t("similar")) {
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 14) {
+                                            ForEach(sims) { a in
+                                                CollectionCard(item: a)
+                                                    .onTapGesture { nav.detail = .artist(id: a.id) }
+                                            }
                                         }
+                                        .padding(.horizontal, 2)
                                     }
-                                    .padding(.horizontal, 2)
                                 }
                             }
                         }

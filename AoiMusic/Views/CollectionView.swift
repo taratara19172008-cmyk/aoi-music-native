@@ -12,7 +12,7 @@ struct CollectionView: View {
     @State private var item: CollectionItem?
     @State private var tracks: [Song] = []
     @State private var loaded = false
-    @State private var albumFav = false
+    @State private var palette: CoverPalette?
     @State private var motionURLStr: String?
     @State private var addSong: Song?
     @State private var shareItem: ShareItem?
@@ -22,7 +22,17 @@ struct CollectionView: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(red: 0.93, green: 0.96, blue: 0.99), Color(red: 0.98, green: 0.92, blue: 0.95)], startPoint: .top, endPoint: .bottom)
+            // The whole page background grows out of the cover's dominant
+            // colours (v105) — no more cover fading into blank pastel.
+            LinearGradient(colors: [palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99),
+                                    palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+            Circle()
+                .fill((palette?.glow ?? settings.accent).opacity(0.35))
+                .frame(width: 320, height: 320)
+                .blur(radius: 80)
+                .offset(x: 140, y: -320)
                 .ignoresSafeArea()
             VStack(spacing: 0) {
                 HStack {
@@ -49,6 +59,13 @@ struct CollectionView: View {
                         .padding(.top, 60)
                     Spacer()
                 } else {
+                  ZStack {
+                    // The track list sits on its own liquid-glass panel.
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(Color.clear)
+                        .aoiGlass(corner: 28)
+                        .padding(.horizontal, 2)
+                        .padding(.bottom, 4)
                     List {
                         heroSection
                         ForEach(Array(tracks.enumerated()), id: \.element.id) { i, s in
@@ -72,10 +89,12 @@ struct CollectionView: View {
                     }
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
+                  }
                 }
             }
             ToastOverlay(text: player.toast)
         }
+        .environment(\.colorScheme, palette?.isDark == true ? .dark : .light)
         .task { await load() }
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
@@ -134,7 +153,7 @@ struct CollectionView: View {
                     }
                 }
                 if kind == "album" {
-                    actionButton(title: albumFav ? settings.t("album_faved") : settings.t("fav_album"), filled: false) {
+                    actionButton(title: player.isFavAlbum(id) ? settings.t("album_faved") : settings.t("fav_album"), filled: false) {
                         toggleAlbumFav()
                     }
                 }
@@ -155,12 +174,12 @@ struct CollectionView: View {
                     .lineSpacing(5)
                     .foregroundStyle(.primary.opacity(0.85))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                    .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .padding(.top, 6)
             }
             }
-            .padding(.horizontal, 16)
+            .padding(14)
+            .aoiGlass(corner: 24)
+            .padding(.horizontal, 12)
             .padding(.top, 12)
             .padding(.bottom, 10)
             .frame(maxWidth: .infinity)
@@ -186,7 +205,7 @@ struct CollectionView: View {
             LinearGradient(
                 stops: [
                     .init(color: .clear, location: 0.55),
-                    .init(color: Color(red: 0.93, green: 0.96, blue: 0.99), location: 1.0),
+                    .init(color: palette?.bottom ?? Color(red: 0.93, green: 0.96, blue: 0.99), location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom)
         }
@@ -212,18 +231,10 @@ struct CollectionView: View {
     }
 
     private func toggleAlbumFav() {
-        guard engine.authorized else { player.showToast(settings.t("need_acct_fav")); return }
-        let was = albumFav
-        albumFav = !was
-        Task {
-            do {
-                if was { try await api.rateDelete(kind: "albums", id: id); player.showToast(settings.t("unfaved")) }
-                else { try await api.rateWrite(kind: "albums", id: id); player.showToast(settings.t("faved")) }
-            } catch {
-                albumFav = was
-                player.showToast(settings.t("fav_fail"))
-            }
-        }
+        // Local-first via the player: the album lands in the Favorites tab the
+        // moment she taps, and the ratings write follows behind it.
+        guard let it = item else { return }
+        player.toggleFavAlbum(it, lang: settings.lang)
     }
 
     private func removeTrack(_ s: Song) {
@@ -255,13 +266,13 @@ struct CollectionView: View {
             tracks = tr
         } catch {}
         loaded = true
+        palette = await CoverPaletteLoader.load(item?.art(600, 600))
         if kind == "album" || kind == "playlist" {
             motionURLStr = await api.motionURL(kind: kind == "album" ? "albums" : "playlists", id: id)
         }
-        if kind == "album" {
-            if engine.authorized {
-                albumFav = await api.rating(kind: "albums", id: id)
-            }
+        if kind == "album", engine.authorized, let it = item, !player.isFavAlbum(id) {
+            // Hydrate from Apple's ratings once; a hit joins the local list.
+            if await api.rating(kind: "albums", id: id) { player.absorbFavAlbums([it]) }
         }
     }
 }
