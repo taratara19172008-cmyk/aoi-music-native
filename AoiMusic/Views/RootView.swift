@@ -41,20 +41,26 @@ struct RootView: View {
                         .padding(.bottom, 6)
                 }
             }
+            if let route = nav.detail {
+                Group {
+                    switch route {
+                    case .collection(let kind, let id):
+                        CollectionView(kind: kind, id: id)
+                    case .artist(let id):
+                        ArtistView(artistId: id)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.move(edge: .trailing))
+                .zIndex(5)
+            }
             ToastOverlay(text: player.toast)
             EngineHost(webView: engine.webView)
                 .frame(width: 1, height: 1)
                 .opacity(0.01)
                 .allowsHitTesting(false)
         }
-        .fullScreenCover(item: $nav.detail) { route in
-            switch route {
-            case .collection(let kind, let id):
-                CollectionView(kind: kind, id: id)
-            case .artist(let id):
-                ArtistView(artistId: id)
-            }
-        }
+        .animation(.easeInOut(duration: 0.28), value: nav.detail)
         .fullScreenCover(isPresented: $nav.showNowPlaying) {
             NowPlayingView()
         }
