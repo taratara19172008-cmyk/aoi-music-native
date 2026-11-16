@@ -9,7 +9,6 @@ struct LibraryView: View {
     @State private var playlists: [CollectionItem] = []
     @State private var songs: [Song] = []
     @State private var artists: [CollectionItem] = []
-    @State private var albums: [CollectionItem] = []
     @State private var loaded = false
     @State private var showCreate = false
     @State private var addSong: Song?
@@ -40,12 +39,6 @@ struct LibraryView: View {
                     }
                     hGrid(playlists) { p in
                         libRow(p) { nav.detail = .collection(kind: "lplaylist", id: p.id) }
-                    }
-                    if !albums.isEmpty {
-                        SectionTitle(text: settings.t("lib_albums"))
-                        hGrid(albums) { a in
-                            libRow(a) { nav.detail = .collection(kind: "album", id: a.id) }
-                        }
                     }
                     if !songs.isEmpty {
                         SectionTitle(text: settings.t("lib_songs"))
@@ -120,6 +113,5 @@ struct LibraryView: View {
         playlists = (try? await api.libraryPlaylists()) ?? []
         songs = (try? await api.librarySongs()) ?? []
         artists = (try? await api.libraryArtists()) ?? []
-        albums = (try? await api.libraryAlbums()) ?? []
     }
 }
