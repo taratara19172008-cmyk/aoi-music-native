@@ -34,6 +34,111 @@ struct ArtworkImage: View {
     }
 }
 
+// MARK: - Marquee text (v106)
+// Her rules: titles never truncate, never shrink, at most two lines, and
+// rows stay uniform. Text that fits in `maxLines` lines sits still; text
+// that doesn't slowly scrolls sideways inside its own slot until the whole
+// string has been shown, then loops. Overflow is measured with NSString so
+// no hidden layout passes are needed.
+struct MarqueeText: View {
+    var text: String
+    var font: Font
+    var uiFont: UIFont
+    var color: Color = .primary
+    var maxLines: Int = 2
+    @State private var boxW: CGFloat = 0
+    @State private var offsetX: CGFloat = 0
+
+    private var intrinsicW: CGFloat { (text as NSString).size(withAttributes: [.font: uiFont]).width }
+    private var fits: Bool {
+        guard boxW > 0 else { return true }
+        let rect = (text as NSString).boundingRect(
+            with: CGSize(width: boxW, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: uiFont], context: nil)
+        return rect.height <= uiFont.lineHeight * CGFloat(maxLines) + 2
+    }
+    private var travel: CGFloat { max(intrinsicW - boxW + 44, 0) }
+
+    var body: some View {
+        Group {
+            if fits {
+                Text(text)
+                    .font(font)
+                    .foregroundStyle(color)
+                    .lineLimit(maxLines)
+                    .multilineTextAlignment(.leading)
+            } else {
+                Text(text)
+                    .font(font)
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .offset(x: offsetX)
+                    .clipped()
+                    .task(id: text) { await scrollLoop() }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(GeometryReader { g in
+            Color.clear
+                .onAppear { boxW = g.size.width }
+                .onChange(of: g.size.width) { boxW = $0 }
+        })
+    }
+
+    private func scrollLoop() async {
+        while !Task.isCancelled {
+            if boxW > 0, !fits { break }
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            if Task.isCancelled { return }
+        }
+        while !Task.isCancelled {
+            offsetX = 0
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            if Task.isCancelled { return }
+            let d = Double(travel) / 26.0
+            if d <= 0 { return }
+            withAnimation(.linear(duration: d)) { offsetX = -travel }
+            try? await Task.sleep(nanoseconds: UInt64(d * 1_000_000_000) + 1_200_000_000)
+        }
+    }
+}
+
+// Long-press preview cards (v106): what pops out when a song / album /
+// playlist / artist is held — big artwork, title, artist.
+struct SongPreview: View {
+    var song: Song
+    var body: some View {
+        VStack(spacing: 10) {
+            ArtworkImage(urlString: song.art(480, 480), size: 216, corner: 16)
+            VStack(spacing: 2) {
+                Text(song.title).font(.headline).lineLimit(2).multilineTextAlignment(.center)
+                Text(song.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .padding(16)
+        .frame(width: 248)
+    }
+}
+
+struct CollectionPreview: View {
+    var item: CollectionItem
+    var body: some View {
+        VStack(spacing: 10) {
+            ArtworkImage(urlString: item.art(480, 480), size: 216, corner: (item.type == "artists" || item.type == "library-artists") ? 108 : 16)
+            VStack(spacing: 2) {
+                Text(item.title).font(.headline).lineLimit(2).multilineTextAlignment(.center)
+                if !item.sub.isEmpty {
+                    Text(item.sub).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 248)
+    }
+}
+
 struct SongRow: View {
     @EnvironmentObject var player: Player
     @EnvironmentObject var settings: AppSettings
@@ -44,6 +149,8 @@ struct SongRow: View {
     var showFav: Bool = true
     var showShare: Bool = false
     var rail: Bool = false
+    var onRemove: (() -> Void)? = nil
+    @State private var shareItem: ShareItem?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -55,14 +162,14 @@ struct SongRow: View {
             }
             ArtworkImage(urlString: song.art(120, 120), size: 46, corner: 8)
             VStack(alignment: .leading, spacing: 2) {
-                Text(song.title)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
-                    .foregroundStyle(player.current?.id == song.id ? settings.accent : .primary)
-                Text(rail ? song.artist : song.artist + (song.album.isEmpty ? "" : " · \(song.album)"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                MarqueeText(text: song.title,
+                            font: .subheadline.weight(.semibold),
+                            uiFont: .systemFont(ofSize: 15, weight: .semibold),
+                            color: player.current?.id == song.id ? settings.accent : .primary)
+                MarqueeText(text: rail ? song.artist : song.artist + (song.album.isEmpty ? "" : " · \(song.album)"),
+                            font: .caption,
+                            uiFont: .systemFont(ofSize: 12),
+                            color: .secondary)
             }
             Spacer(minLength: 4)
             if player.current?.id == song.id {
@@ -99,6 +206,25 @@ struct SongRow: View {
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
         .onAppear { player.hydrateFav(song) }
+        .contextMenu {
+            Button { onTap() } label: { Label(settings.t("play"), systemImage: "play.fill") }
+            Button { player.toggleFav(song, lang: settings.lang) } label: {
+                Label(settings.t(player.isFav(song) ? "fav_remove" : "fav_add"),
+                      systemImage: player.isFav(song) ? "heart.slash" : "heart")
+            }
+            if let onAdd = onAdd {
+                Button { onAdd() } label: { Label(settings.t("add_to_playlist"), systemImage: "plus") }
+            }
+            if let onRemove = onRemove {
+                Button(role: .destructive) { onRemove() } label: { Label(settings.t("remove_from_pl"), systemImage: "trash") }
+            }
+            Button {
+                if let u = song.attributes?.url, let url = URL(string: u) { shareItem = ShareItem(url: url) }
+            } label: { Label(settings.t("share"), systemImage: "square.and.arrow.up") }
+        } preview: {
+            SongPreview(song: song)
+        }
+        .sheet(item: $shareItem) { ShareSheet(items: [$0.url]) }
     }
 }
 
@@ -160,8 +286,13 @@ struct ArtworkSquare: View {
 }
 
 struct CollectionCard: View {
+    @EnvironmentObject var player: Player
+    @EnvironmentObject var settings: AppSettings
     var item: CollectionItem
     var width: CGFloat = 150
+    // When set, the card handles its own tap and grows the native long-press
+    // menu (v106): pop-out preview + open / play all / favorite.
+    var onOpenCard: (() -> Void)? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if width > 0 {
@@ -169,16 +300,55 @@ struct CollectionCard: View {
             } else {
                 ArtworkSquare(urlString: item.art(320, 320), corner: 14)
             }
-            Text(item.title)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(2)
-            Text(item.sub)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            MarqueeText(text: item.title,
+                        font: .subheadline.weight(.semibold),
+                        uiFont: .systemFont(ofSize: 15, weight: .semibold))
+            MarqueeText(text: item.sub,
+                        font: .caption,
+                        uiFont: .systemFont(ofSize: 12),
+                        color: .secondary)
         }
         .frame(width: width > 0 ? width : nil)
         .frame(maxWidth: width > 0 ? nil : .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .modifier(CardPressMenu(item: item, onOpenCard: onOpenCard))
+    }
+}
+
+// The long-press behaviour for cards, factored out so the card body stays
+// readable. Inert unless an open action was supplied.
+struct CardPressMenu: ViewModifier {
+    @EnvironmentObject var player: Player
+    @EnvironmentObject var settings: AppSettings
+    var item: CollectionItem
+    var onOpenCard: (() -> Void)?
+    func body(content: Content) -> some View {
+        if let open = onOpenCard {
+            content
+                .onTapGesture { open() }
+                .contextMenu {
+                    if item.type == "stations" {
+                        Button { open() } label: { Label(settings.t("play"), systemImage: "play.fill") }
+                    } else {
+                        Button { open() } label: { Label(settings.t("open"), systemImage: "arrow.up.forward.square") }
+                        if item.type == "albums" || item.type == "playlists" {
+                            Button {
+                                player.playCollection(item, kind: item.type == "albums" ? "album" : "playlist")
+                            } label: { Label(settings.t("play_all"), systemImage: "play.fill") }
+                        }
+                        if item.type == "albums" {
+                            Button { player.toggleFavAlbum(item, lang: settings.lang) } label: {
+                                Label(settings.t(player.isFavAlbum(item.id) ? "fav_remove" : "fav_add"),
+                                      systemImage: player.isFavAlbum(item.id) ? "heart.slash" : "heart")
+                            }
+                        }
+                    }
+                } preview: {
+                    CollectionPreview(item: item)
+                }
+        } else {
+            content
+        }
     }
 }
 

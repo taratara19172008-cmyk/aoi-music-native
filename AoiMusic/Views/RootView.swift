@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum Page: String, CaseIterable {
-    case home, search, radio, library, favorites, settings
+    case home, search, radio, library, favorites, settings, ai
     var icon: String {
         switch self {
         case .home: return "house.fill"
@@ -10,6 +10,7 @@ enum Page: String, CaseIterable {
         case .library: return "square.grid.2x2.fill"
         case .favorites: return "heart.fill"
         case .settings: return "gearshape.fill"
+        case .ai: return "sparkles"
         }
     }
     var key: String { rawValue }
@@ -95,8 +96,8 @@ struct RootView: View {
     private var railBody: some View {
         VStack(spacing: 0) {
             RailSegment(pages: mainPages, firstCenter: 98, topPad: 0, bottomPad: 6, selection: $page, showsLogo: true)
-            Spacer(minLength: 24)
-            RailSegment(pages: [.favorites, .settings], firstCenter: 38, topPad: 10, bottomPad: 10, selection: $page)
+            Spacer(minLength: 32)
+            RailSegment(pages: [.ai, .favorites, .settings], firstCenter: 38, topPad: 10, bottomPad: 10, selection: $page)
         }
         .frame(width: 74)
         .frame(height: railH)
@@ -112,6 +113,7 @@ struct RootView: View {
         case .library: LibraryView()
         case .favorites: FavoritesView()
         case .settings: SettingsView()
+        case .ai: AIChatView()
         }
     }
 }
@@ -127,13 +129,13 @@ struct MiniPlayer: View {
                 HStack(spacing: 10) {
                     ArtworkImage(urlString: player.current?.art(120, 120), size: 44, corner: 9)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(player.current?.title ?? "")
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(2)
-                        Text(player.current?.artist ?? "")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                        MarqueeText(text: player.current?.title ?? "",
+                                    font: .subheadline.weight(.semibold),
+                                    uiFont: .systemFont(ofSize: 15, weight: .semibold))
+                        MarqueeText(text: player.current?.artist ?? "",
+                                    font: .caption,
+                                    uiFont: .systemFont(ofSize: 12),
+                                    color: .secondary)
                     }
                 }
             }
@@ -256,7 +258,9 @@ struct RailSegment: View {
             Text(settings.t(p.key))
                 .font(.system(size: 10, weight: .medium))
         }
-        .foregroundStyle(sel ? settings.accent : Color.primary.opacity(0.75))
+        .foregroundStyle(p == .ai
+            ? AnyShapeStyle(LinearGradient(colors: [settings.accent, Color(red: 0.75, green: 0.35, blue: 0.95)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            : AnyShapeStyle(sel ? settings.accent : Color.primary.opacity(0.75)))
         .frame(width: 62, height: 56)
         .scaleEffect(sel && dragging ? 1.14 : 1.0)
         .animation(.spring(response: 0.32, dampingFraction: 0.55), value: sel && dragging)

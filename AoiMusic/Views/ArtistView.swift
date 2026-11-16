@@ -15,11 +15,22 @@ struct ArtistView: View {
     @State private var artistMotion: String?
     @State private var videos: [MVItem] = []
     @State private var playMV: MVItem?
+    @State private var palette: CoverPalette?
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(red: 0.93, green: 0.96, blue: 0.99), Color(red: 0.98, green: 0.92, blue: 0.95)], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
+            // v106: the page background grows out of the artist photo's own
+            // colours (same treatment as album/playlist pages), and the
+            // photo melts into it — no hard seam anywhere.
+            ZStack {
+                LinearGradient(colors: [palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99), palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)], startPoint: .top, endPoint: .bottom)
+                Circle()
+                    .fill((palette?.glow ?? Color(red: 0.45, green: 0.75, blue: 0.95)).opacity(0.38))
+                    .frame(width: 300, height: 300)
+                    .blur(radius: 80)
+                    .offset(x: 120, y: -240)
+            }
+            .ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if let d = detail {
@@ -52,8 +63,7 @@ struct ArtistView: View {
                                     ScrollView(.horizontal, showsIndicators: false) {
                                         HStack(spacing: 14) {
                                             ForEach(albums) { a in
-                                                CollectionCard(item: a)
-                                                    .onTapGesture { nav.detail = .collection(kind: "album", id: a.id) }
+                                                CollectionCard(item: a, onOpenCard: { nav.detail = .collection(kind: "album", id: a.id) })
                                             }
                                         }
                                         .padding(.horizontal, 2)
@@ -77,8 +87,7 @@ struct ArtistView: View {
                                     ScrollView(.horizontal, showsIndicators: false) {
                                         HStack(spacing: 14) {
                                             ForEach(pls) { p in
-                                                CollectionCard(item: p)
-                                                    .onTapGesture { nav.detail = .collection(kind: "playlist", id: p.id) }
+                                                CollectionCard(item: p, onOpenCard: { nav.detail = .collection(kind: "playlist", id: p.id) })
                                             }
                                         }
                                         .padding(.horizontal, 2)
@@ -90,8 +99,7 @@ struct ArtistView: View {
                                     ScrollView(.horizontal, showsIndicators: false) {
                                         HStack(spacing: 14) {
                                             ForEach(sims) { a in
-                                                CollectionCard(item: a)
-                                                    .onTapGesture { nav.detail = .artist(id: a.id) }
+                                                CollectionCard(item: a, onOpenCard: { nav.detail = .artist(id: a.id) })
                                             }
                                         }
                                         .padding(.horizontal, 2)
@@ -119,6 +127,7 @@ struct ArtistView: View {
             ToastOverlay(text: player.toast)
         }
         .frame(width: UIScreen.main.bounds.width)
+        .environment(\.colorScheme, palette?.isDark == true ? .dark : .light)
         .task { await load() }
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
         .fullScreenCover(item: $playMV) { v in
@@ -152,9 +161,11 @@ struct ArtistView: View {
             }
             LinearGradient(
                 stops: [
-                    .init(color: .clear, location: 0.35),
-                    .init(color: .black.opacity(0.45), location: 0.75),
-                    .init(color: Color(red: 0.93, green: 0.96, blue: 0.99), location: 1.0),
+                    .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.9), location: 0.0),
+                    .init(color: .clear, location: 0.14),
+                    .init(color: .clear, location: 0.30),
+                    .init(color: .black.opacity(0.42), location: 0.72),
+                    .init(color: palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95), location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom)
             Text(d.attributes?.name ?? "")
@@ -229,6 +240,7 @@ struct ArtistView: View {
         if loaded { return }
         loaded = true
         detail = try? await api.artistDetail(id: artistId)
+        palette = await CoverPaletteLoader.load(detail?.attributes?.artwork?.urlString(600, 600))
         videos = await api.artistVideos(id: artistId)
         artistMotion = await api.motionURL(kind: "artists", id: artistId)
         if engine.authorized {

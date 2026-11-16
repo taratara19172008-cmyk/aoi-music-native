@@ -44,8 +44,7 @@ struct FavoritesView: View {
                         } else {
                             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                                 ForEach(player.favAlbums) { a in
-                                    CollectionCard(item: a, width: 0)
-                                        .onTapGesture { nav.detail = .collection(kind: "album", id: a.id) }
+                                    CollectionCard(item: a, width: 0, onOpenCard: { nav.detail = .collection(kind: "album", id: a.id) })
                                 }
                             }
                             .padding(.top, 4)

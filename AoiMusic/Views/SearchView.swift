@@ -60,11 +60,10 @@ struct SearchView: View {
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 14) {
                                     ForEach(artists) { a in
-                                        CollectionCard(item: a)
-                                            .onTapGesture {
-                                                player.recordSearch(.init(kind: "artist", id: a.id, name: a.title, sub: a.sub, art: a.art(160, 160), song: nil))
-                                                nav.detail = .artist(id: a.id)
-                                            }
+                                        CollectionCard(item: a, onOpenCard: {
+                                            player.recordSearch(.init(kind: "artist", id: a.id, name: a.title, sub: a.sub, art: a.art(160, 160), song: nil))
+                                            nav.detail = .artist(id: a.id)
+                                        })
                                     }
                                 }
                                 .padding(.horizontal, 2)
@@ -85,11 +84,10 @@ struct SearchView: View {
                         GlassSection(title: settings.t("albums")) {
                             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                                 ForEach(albums) { a in
-                                    CollectionCard(item: a, width: 0)
-                                        .onTapGesture {
-                                            player.recordSearch(.init(kind: "album", id: a.id, name: a.title, sub: a.sub, art: a.art(160, 160), song: nil))
-                                            nav.detail = .collection(kind: "album", id: a.id)
-                                        }
+                                    CollectionCard(item: a, width: 0, onOpenCard: {
+                                        player.recordSearch(.init(kind: "album", id: a.id, name: a.title, sub: a.sub, art: a.art(160, 160), song: nil))
+                                        nav.detail = .collection(kind: "album", id: a.id)
+                                    })
                                 }
                             }
                         }
@@ -98,11 +96,10 @@ struct SearchView: View {
                         GlassSection(title: settings.t("playlists")) {
                             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                                 ForEach(playlists) { p in
-                                    CollectionCard(item: p, width: 0)
-                                        .onTapGesture {
-                                            player.recordSearch(.init(kind: "playlist", id: p.id, name: p.title, sub: p.sub, art: p.art(160, 160), song: nil))
-                                            nav.detail = .collection(kind: "playlist", id: p.id)
-                                        }
+                                    CollectionCard(item: p, width: 0, onOpenCard: {
+                                        player.recordSearch(.init(kind: "playlist", id: p.id, name: p.title, sub: p.sub, art: p.art(160, 160), song: nil))
+                                        nav.detail = .collection(kind: "playlist", id: p.id)
+                                    })
                                 }
                             }
                         }
@@ -117,12 +114,27 @@ struct SearchView: View {
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
     }
 
+    private func openHistory(_ e: SearchEntity) {
+        switch e.kind {
+        case "song": if let s = e.song { player.playSongs([s], start: 0) }
+        case "album": nav.detail = .collection(kind: "album", id: e.id)
+        case "playlist": nav.detail = .collection(kind: "playlist", id: e.id)
+        case "artist": nav.detail = .artist(id: e.id)
+        default: break
+        }
+    }
+
     private func historyRow(_ e: SearchEntity) -> some View {
         HStack(spacing: 10) {
             ArtworkImage(urlString: e.art, size: 46, corner: e.kind == "artist" ? 23 : 8)
             VStack(alignment: .leading, spacing: 2) {
-                Text(e.name).font(.subheadline.weight(.semibold)).lineLimit(2)
-                Text(e.sub).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                MarqueeText(text: e.name,
+                            font: .subheadline.weight(.semibold),
+                            uiFont: .systemFont(ofSize: 15, weight: .semibold))
+                MarqueeText(text: e.sub,
+                            font: .caption,
+                            uiFont: .systemFont(ofSize: 12),
+                            color: .secondary)
             }
             Spacer()
             Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(.tertiary)
@@ -130,14 +142,21 @@ struct SearchView: View {
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .contentShape(Rectangle())
-        .onTapGesture {
-            switch e.kind {
-            case "song": if let s = e.song { player.playSongs([s], start: 0) }
-            case "album": nav.detail = .collection(kind: "album", id: e.id)
-            case "playlist": nav.detail = .collection(kind: "playlist", id: e.id)
-            case "artist": nav.detail = .artist(id: e.id)
-            default: break
+        .onTapGesture { openHistory(e) }
+        .contextMenu {
+            Button { openHistory(e) } label: {
+                Label(settings.t(e.kind == "song" ? "play" : "open"), systemImage: e.kind == "song" ? "play.fill" : "arrow.up.forward.square")
             }
+        } preview: {
+            VStack(spacing: 10) {
+                ArtworkImage(urlString: e.art, size: 216, corner: e.kind == "artist" ? 108 : 16)
+                VStack(spacing: 2) {
+                    Text(e.name).font(.headline).lineLimit(2).multilineTextAlignment(.center)
+                    Text(e.sub).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .padding(16)
+            .frame(width: 248)
         }
     }
 

@@ -95,8 +95,7 @@ struct HomeView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: 14) {
                 ForEach(items) { item in
-                    CollectionCard(item: item)
-                        .onTapGesture { tap(item) }
+                    CollectionCard(item: item, onOpenCard: { tap(item) })
                 }
             }
             .padding(.horizontal, 2)
@@ -124,17 +123,26 @@ struct HomeView: View {
     private func songCard(_ s: Song, tap: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             ArtworkImage(urlString: s.art(300, 300), size: 118, corner: 12)
-            Text(s.title)
-                .font(.caption.weight(.semibold))
-                .lineLimit(2)
-            Text(s.artist)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            MarqueeText(text: s.title,
+                        font: .caption.weight(.semibold),
+                        uiFont: .systemFont(ofSize: 12, weight: .semibold))
+            MarqueeText(text: s.artist,
+                        font: .caption2,
+                        uiFont: .systemFont(ofSize: 11),
+                        color: .secondary)
         }
         .frame(width: 118, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { tap() }
+        .contextMenu {
+            Button { tap() } label: { Label(settings.t("play"), systemImage: "play.fill") }
+            Button { player.toggleFav(s, lang: settings.lang) } label: {
+                Label(settings.t(player.isFav(s) ? "fav_remove" : "fav_add"),
+                      systemImage: player.isFav(s) ? "heart.slash" : "heart")
+            }
+        } preview: {
+            SongPreview(song: s)
+        }
     }
 
     private func tap(_ item: CollectionItem) {

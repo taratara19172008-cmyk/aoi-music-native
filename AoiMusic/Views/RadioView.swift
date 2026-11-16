@@ -40,8 +40,7 @@ struct RadioView: View {
                     GlassSection(title: settings.t("feat_playlists")) {
                         LazyVGrid(columns: gridCols, spacing: 16) {
                             ForEach(playlists) { item in
-                                CollectionCard(item: item, width: 0)
-                                    .onTapGesture { tap(item) }
+                                CollectionCard(item: item, width: 0, onOpenCard: { tap(item) })
                             }
                         }
                     }
@@ -78,19 +77,24 @@ struct RadioView: View {
             .frame(maxWidth: .infinity)
             .aspectRatio(1.6, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            Text(item.title)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(2)
+            MarqueeText(text: item.title,
+                        font: .subheadline.weight(.semibold),
+                        uiFont: .systemFont(ofSize: 15, weight: .semibold))
             if !item.sub.isEmpty {
-                Text(item.sub)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                MarqueeText(text: item.sub,
+                            font: .caption,
+                            uiFont: .systemFont(ofSize: 12),
+                            color: .secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { tap(item) }
+        .contextMenu {
+            Button { tap(item) } label: { Label(settings.t("play"), systemImage: "play.fill") }
+        } preview: {
+            CollectionPreview(item: item)
+        }
     }
 
     private func tap(_ item: CollectionItem) {

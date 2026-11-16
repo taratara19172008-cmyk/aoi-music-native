@@ -86,22 +86,33 @@ struct NowPlayingView: View {
 
     @ViewBuilder
     private var middle: some View {
-        switch panel {
-        case 1: lyricsView
-        case 2: queueView
-        default:
-            ZStack {
-                if let m = motionURLStr, let u = URL(string: m) {
-                    LoopingVideo(url: u)
-                        .frame(width: 320, height: 320)
-                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                } else {
-                    ArtworkImage(urlString: player.current?.art(800, 800), size: 320, corner: 24)
-                }
-            }
-            .shadow(color: Color.black.opacity(0.30), radius: 24, y: 12)
-            .frame(height: 320)
+        // The artwork panel stays MOUNTED (only faded out) while the lyrics
+        // or queue panel shows (v106): destroying and rebuilding the motion-
+        // cover player on every panel switch churned the audio session and
+        // paused the song. Together with the mixWithOthers session, panel
+        // switches are now silent to the playback engine.
+        ZStack {
+            artworkPanel
+                .opacity(panel == 0 ? 1 : 0)
+                .allowsHitTesting(panel == 0)
+            if panel == 1 { lyricsView }
+            if panel == 2 { queueView }
         }
+        .frame(height: 320)
+    }
+
+    private var artworkPanel: some View {
+        ZStack {
+            if let m = motionURLStr, let u = URL(string: m) {
+                LoopingVideo(url: u)
+                    .frame(width: 320, height: 320)
+                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            } else {
+                ArtworkImage(urlString: player.current?.art(800, 800), size: 320, corner: 24)
+            }
+        }
+        .shadow(color: Color.black.opacity(0.30), radius: 24, y: 12)
+        .frame(height: 320)
     }
 
     private var lyricsView: some View {

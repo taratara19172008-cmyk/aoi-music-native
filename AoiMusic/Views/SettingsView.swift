@@ -8,6 +8,7 @@ struct SettingsView: View {
     @EnvironmentObject var player: Player
     @State private var customColor: Color = .red
     @State private var pickerItem: PhotosPickerItem?
+    @State private var aiKeyText = ""
 
     var body: some View {
         ScrollView {
@@ -44,6 +45,30 @@ struct SettingsView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
+
+                SectionTitle(text: settings.t("ai_key"))
+                VStack(alignment: .leading, spacing: 8) {
+                    SecureField(settings.t("ai_key_ph"), text: $aiKeyText)
+                        .font(.subheadline)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    HStack(alignment: .bottom, spacing: 10) {
+                        Text(settings.t("ai_key_note"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(settings.t("save")) {
+                            AIKeyStore.set(aiKeyText.trimmingCharacters(in: .whitespacesAndNewlines))
+                            player.showToast(settings.t("ai_key_saved"))
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(settings.accent)
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(12)
+                .aoiGlass(corner: 18)
+                .onAppear { aiKeyText = AIKeyStore.get() }
 
                 SectionTitle(text: settings.t("theme"))
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 40), spacing: 12)], alignment: .leading, spacing: 12) {

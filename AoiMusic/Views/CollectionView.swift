@@ -59,37 +59,34 @@ struct CollectionView: View {
                         .padding(.top, 60)
                     Spacer()
                 } else {
-                  ZStack {
-                    // The track list sits on its own liquid-glass panel.
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .fill(Color.clear)
-                        .aoiGlass(corner: 28)
-                        .padding(.horizontal, 2)
-                        .padding(.bottom, 4)
-                    List {
-                        heroSection
-                        ForEach(Array(tracks.enumerated()), id: \.element.id) { i, s in
-                            SongRow(song: s, index: i, onTap: { player.playSongs(tracks, start: i) }, onAdd: { addSong = s }, showShare: true)
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button {
-                                        if let u = s.attributes?.url, let url = URL(string: u) { shareItem = ShareItem(url: url) }
-                                    } label: {
-                                        Label(settings.t("share"), systemImage: "square.and.arrow.up")
-                                    }
-                                    .tint(.gray)
-                                    if kind == "lplaylist" {
-                                        Button(role: .destructive) { removeTrack(s) } label: {
-                                            Label(settings.t("del"), systemImage: "trash")
-                                        }
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            heroSection
+                            if !tracks.isEmpty {
+                                // ONE liquid-glass panel for the whole track
+                                // list, first song to last (v106) — the hero
+                                // and its info card live outside it, on the
+                                // palette background. (v105 wrapped the whole
+                                // page in one slab that ended mid-list and
+                                // boxed the cover in with visible edges.)
+                                VStack(spacing: 0) {
+                                    ForEach(Array(tracks.enumerated()), id: \.element.id) { i, s in
+                                        SongRow(song: s, index: i, onTap: { player.playSongs(tracks, start: i) }, onAdd: { addSong = s }, showShare: true, onRemove: kind == "lplaylist" ? { removeTrack(s) } : nil)
                                     }
                                 }
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 6)
+                                .aoiGlass(corner: 28)
+                                .padding(.horizontal, 10)
+                            }
+                            if kind == "playlist" || kind == "lplaylist" {
+                                PlaylistAIRecView(cacheKey: id, seed: tracks)
+                                    .padding(.horizontal, 10)
+                            }
+                            Spacer(minLength: 30)
                         }
                     }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
-                  }
+                    .scrollIndicators(.hidden)
                 }
             }
             ToastOverlay(text: player.toast)
@@ -180,13 +177,10 @@ struct CollectionView: View {
             .padding(14)
             .aoiGlass(corner: 24)
             .padding(.horizontal, 12)
-            .padding(.top, 12)
+            .padding(.top, -28)
             .padding(.bottom, 10)
             .frame(maxWidth: .infinity)
         }
-        .listRowInsets(EdgeInsets())
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
     }
 
     // The cover IS the header background: full-bleed, edge to edge, fading into
@@ -204,8 +198,10 @@ struct CollectionView: View {
             }
             LinearGradient(
                 stops: [
-                    .init(color: .clear, location: 0.55),
-                    .init(color: palette?.bottom ?? Color(red: 0.93, green: 0.96, blue: 0.99), location: 1.0),
+                    .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.9), location: 0.0),
+                    .init(color: .clear, location: 0.16),
+                    .init(color: .clear, location: 0.42),
+                    .init(color: palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95), location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom)
         }

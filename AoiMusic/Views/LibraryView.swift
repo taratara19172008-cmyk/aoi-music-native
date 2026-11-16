@@ -39,7 +39,7 @@ struct LibraryView: View {
                     }
                     GlassSection {
                         railGrid(playlists) { p in
-                            libRow(p) { nav.detail = .collection(kind: "lplaylist", id: p.id) }
+                            libRow(p, kind: "lplaylist") { nav.detail = .collection(kind: "lplaylist", id: p.id) }
                         }
                     }
                     if !songs.isEmpty {
@@ -50,7 +50,7 @@ struct LibraryView: View {
                     if !artists.isEmpty {
                         GlassSection(title: settings.t("lib_artists")) {
                             railGrid(artists) { a in
-                                libRow(a, artist: true) { nav.detail = .artist(id: a.id) }
+                                libRow(a, artist: true, kind: "artist") { nav.detail = .artist(id: a.id) }
                             }
                         }
                     }
@@ -104,7 +104,7 @@ struct LibraryView: View {
         }
     }
 
-    private func libRow(_ item: CollectionItem, artist: Bool = false, tap: @escaping () -> Void) -> some View {
+    private func libRow(_ item: CollectionItem, artist: Bool = false, kind: String = "", tap: @escaping () -> Void) -> some View {
         HStack(spacing: 10) {
             if artist && item.art(120, 120) == nil {
                 // No catalog photo for this artist: a tinted initial medallion
@@ -121,14 +121,14 @@ struct LibraryView: View {
                 ArtworkImage(urlString: item.art(120, 120), size: 46, corner: artist ? 23 : 8)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(2)
+                MarqueeText(text: item.title,
+                            font: .subheadline.weight(.medium),
+                            uiFont: .systemFont(ofSize: 15, weight: .medium))
                 if !item.sub.isEmpty {
-                    Text(item.sub)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                    MarqueeText(text: item.sub,
+                                font: .caption,
+                                uiFont: .systemFont(ofSize: 12),
+                                color: .secondary)
                 }
             }
             Spacer(minLength: 0)
@@ -136,6 +136,14 @@ struct LibraryView: View {
         .frame(width: colW, height: 64, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { tap() }
+        .contextMenu {
+            Button { tap() } label: { Label(settings.t("open"), systemImage: "arrow.up.forward.square") }
+            if kind == "lplaylist" {
+                Button { player.playCollection(item, kind: "lplaylist") } label: { Label(settings.t("play_all"), systemImage: "play.fill") }
+            }
+        } preview: {
+            CollectionPreview(item: item)
+        }
     }
 
     private func load() async {
