@@ -37,6 +37,12 @@
 	<key>WKAppBoundDomains</key>
 	<array>
 		<string>taratara19172008-cmyk.github.io</string>
+		<string>authorize.music.apple.com</string>
+		<string>music.apple.com</string>
+		<string>appleid.apple.com</string>
+		<string>id.apple.com</string>
+		<string>api.music.apple.com</string>
+		<string>amp-api.music.apple.com</string>
 	</array>
 </dict>
 </plist>
