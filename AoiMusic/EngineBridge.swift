@@ -12,7 +12,7 @@ struct EngineItem: Decodable {
 }
 
 final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
-    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html?v=5")!
+    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html?v=6")!
     let webView: WKWebView
     @Published var ready = false
     @Published var authorized = false
@@ -23,6 +23,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     private var pendingAuthorize = false
     private var probeTimer: Timer?
     private var lastProbe = ""
+    private var lastFrame = ""
 
     var onState: ((Bool) -> Void)?
     var onItem: ((EngineItem?) -> Void)?
@@ -57,6 +58,8 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
 
     private func probe() {
         if ready { probeTimer?.invalidate(); probeTimer = nil; return }
+        let frame = "frame: " + (webView.url?.absoluteString ?? "nil")
+        if frame != lastFrame { lastFrame = frame; logEvent(frame) }
         webView.evaluateJavaScript("window.__mkScript + '|' + (typeof window.MusicKit) + '|' + (window.__aoiHasMusic ? 'music' : 'nomusic')") { [weak self] result, error in
             guard let self else { return }
             let text: String
