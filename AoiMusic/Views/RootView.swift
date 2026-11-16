@@ -20,7 +20,8 @@ struct RootView: View {
     @EnvironmentObject var engine: EngineBridge
     @EnvironmentObject var nav: AppNav
     @State private var page: Page = .home
-    @State private var railDragY: CGFloat? = nil
+    @State private var dragTarget: Page? = nil
+    @Namespace private var lensNS
 
     var body: some View {
         ZStack {
@@ -104,21 +105,15 @@ struct RootView: View {
     }
 
     @ViewBuilder
-    private func railLens(y: CGFloat) -> some View {
+    private var lensBackground: some View {
         let rr = RoundedRectangle(cornerRadius: 19, style: .continuous)
-        Group {
-            if #available(iOS 26.0, *) {
-                Color.clear
-                    .frame(width: 66, height: 56)
-                    .glassEffect(.regular.interactive(), in: rr)
-            } else {
-                rr.fill(.white.opacity(0.35))
-                    .frame(width: 66, height: 56)
-            }
+        if #available(iOS 26.0, *) {
+            Color.clear
+                .glassEffect(.regular.interactive(), in: rr)
+                .glassEffectID("railLens", in: lensNS)
+        } else {
+            rr.fill(.white.opacity(0.35))
         }
-        .shadow(color: .black.opacity(0.10), radius: 6, y: 2)
-        .offset(y: y - 28)
-        .animation(railDragY == nil ? .spring(response: 0.42, dampingFraction: 0.60) : nil, value: y)
     }
 
     private var rail: some View {
@@ -132,11 +127,7 @@ struct RootView: View {
     }
 
     private var railBody: some View {
-        let target = railDragY.map { railPage(atY: $0) } ?? page
-        let lensY = min(max(railDragY ?? railCenter(page), railCenter(.home)), railCenter(.settings))
-        return ZStack(alignment: .top) {
-            railLens(y: lensY)
-            VStack(spacing: 6) {
+        VStack(spacing: 6) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(settings.accent.opacity(0.85))
@@ -153,24 +144,25 @@ struct RootView: View {
                 Spacer(minLength: 8)
                 railButton(.settings)
                     .padding(.bottom, 12)
-            }
         }
         .frame(width: 74)
         .frame(height: railH)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { v in railDragY = v.location.y }
+                .onChanged { v in dragTarget = railPage(atY: v.location.y) }
                 .onEnded { v in
                     page = railPage(atY: v.location.y)
-                    railDragY = nil
+                    dragTarget = nil
                 }
         )
+        .animation(.spring(response: 0.42, dampingFraction: 0.70), value: dragTarget ?? page)
         .aoiGlass(corner: 37)
         .padding(.vertical, 20)
     }
 
     private func railButton(_ p: Page) -> some View {
-        Button {
+        let sel = (dragTarget ?? page) == p
+        return Button {
             page = p
         } label: {
             VStack(spacing: 3) {
@@ -179,8 +171,9 @@ struct RootView: View {
                 Text(settings.t(p.key))
                     .font(.system(size: 10, weight: .medium))
             }
-            .foregroundStyle(((railDragY.map { railPage(atY: $0) } ?? page) == p) ? settings.accent : Color.primary.opacity(0.75))
+            .foregroundStyle(sel ? settings.accent : Color.primary.opacity(0.75))
             .frame(width: 62, height: 56)
+            .background { if sel { lensBackground } }
         }
         .buttonStyle(.plain)
     }
