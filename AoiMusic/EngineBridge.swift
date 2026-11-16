@@ -12,7 +12,7 @@ struct EngineItem: Decodable {
 }
 
 final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
-    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html?v=3")!
+    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html?v=4")!
     let webView: WKWebView
     @Published var ready = false
     @Published var authorized = false
@@ -26,6 +26,13 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     var onItem: ((EngineItem?) -> Void)?
     var onProgress: ((Double, Double, Bool) -> Void)?
     var onError: ((String) -> Void)?
+
+    func logEvent(_ s: String) {
+        var lines = lastError.isEmpty ? [] : lastError.components(separatedBy: "\n")
+        lines.append(s)
+        if lines.count > 6 { lines = Array(lines.suffix(6)) }
+        lastError = lines.joined(separator: "\n")
+    }
 
     private var popupVC: UIViewController?
     private var popupWebView: WKWebView?
@@ -50,10 +57,12 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
         case "boot":
-            if lastError.isEmpty { lastError = "boot ok, waiting for MusicKit" }
+            logEvent("boot ok, waiting for MusicKit")
+        case "log":
+            logEvent((body["message"] as? String) ?? "")
         case "ready":
             ready = true
-            if lastError.hasPrefix("boot ok") { lastError = "" }
+            logEvent("engine ready")
             if pendingAuthorize { pendingAuthorize = false; authorize() }
         case "auth":
             authorized = (body["authorized"] as? Bool) ?? false
@@ -72,7 +81,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         case "progress":
             onProgress?((body["t"] as? Double) ?? 0, (body["d"] as? Double) ?? 0, (body["isPlaying"] as? Bool) ?? false)
         case "error":
-            lastError = ((body["where"] as? String) ?? "engine") + ": " + ((body["message"] as? String) ?? "")
+            logEvent(((body["where"] as? String) ?? "engine") + ": " + ((body["message"] as? String) ?? ""))
             onError?((body["where"] as? String) ?? "engine")
         default:
             break
@@ -95,13 +104,13 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         if !ready {
             pendingAuthorize = true
             if !pageLoaded { webView.reload() }
-            lastError = "engine not ready yet, will continue when ready"
+            logEvent("tap connect: engine not ready, queued")
             return
         }
         DispatchQueue.main.async { [weak self] in
             self?.webView.evaluateJavaScript("window.AoiEngine && AoiEngine.authorize()", completionHandler: { _, err in
                 if let err = err {
-                    DispatchQueue.main.async { self?.lastError = "call failed: " + err.localizedDescription }
+                    DispatchQueue.main.async { self?.logEvent("call failed: " + err.localizedDescription) }
                 }
             })
         }
@@ -155,11 +164,11 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { pageLoaded = true }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         if (error as NSError).code == NSURLErrorCancelled { return }
-        lastError = "page load failed: " + error.localizedDescription
+        logEvent("page load failed: " + error.localizedDescription)
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         if (error as NSError).code == NSURLErrorCancelled { return }
-        lastError = "page load failed: " + error.localizedDescription
+        logEvent("page load failed: " + error.localizedDescription)
     }
     private static func topPresenter() -> UIViewController? {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
