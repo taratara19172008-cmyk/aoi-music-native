@@ -46,6 +46,7 @@ struct CollectionAttrs: Codable, Hashable {
     var curatorName: String?
     var artwork: Artwork?
     var description: Desc?
+    var editorialNotes: Desc?
     var trackCount: Int?
     struct Desc: Codable, Hashable { var standard: String?; var short: String? }
 }

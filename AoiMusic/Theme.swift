@@ -124,7 +124,7 @@ struct GlassModifier: ViewModifier {
     var interactive: Bool = false
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.glassEffect(interactive ? .regular.interactive() : .regular, in: .rect(cornerRadius: corner))
+            content.glassEffect(interactive ? .clear.interactive() : .clear, in: .rect(cornerRadius: corner))
         } else {
             content
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
