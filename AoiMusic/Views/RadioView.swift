@@ -27,23 +27,26 @@ struct RadioView: View {
                 }
                 if !stations.isEmpty {
                     SectionTitle(text: settings.t("official_stations"))
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                        ForEach(stations) { item in
-                            CollectionCard(item: item, width: 0)
-                                .onTapGesture { tap(item) }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 14) {
+                            ForEach(stations) { item in
+                                stationCard(item)
+                            }
                         }
+                        .padding(.horizontal, 2)
                     }
-                    .padding(.top, 4)
                 }
                 if !playlists.isEmpty {
                     SectionTitle(text: settings.t("feat_playlists"))
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                        ForEach(playlists) { item in
-                            CollectionCard(item: item, width: 0)
-                                .onTapGesture { tap(item) }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 14) {
+                            ForEach(playlists) { item in
+                                CollectionCard(item: item)
+                                    .onTapGesture { tap(item) }
+                            }
                         }
+                        .padding(.horizontal, 2)
                     }
-                    .padding(.top, 4)
                 }
                 if !loaded { ProgressView().frame(maxWidth: .infinity).padding(.top, 40) }
                 Spacer(minLength: 90)
@@ -53,6 +56,42 @@ struct RadioView: View {
         }
         .scrollIndicators(.hidden)
         .task { await load() }
+    }
+
+    private func stationCard(_ item: CollectionItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.secondary.opacity(0.15))
+                if let u = item.art(480, 300), let url = URL(string: u) {
+                    AsyncImage(url: url) { img in
+                        img.resizable().scaledToFill()
+                    } placeholder: {
+                        Image(systemName: "radio")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Image(systemName: "radio")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 240, height: 150)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Text(item.title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+            if !item.sub.isEmpty {
+                Text(item.sub)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: 240, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { tap(item) }
     }
 
     private func tap(_ item: CollectionItem) {
