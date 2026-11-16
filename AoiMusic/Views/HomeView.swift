@@ -9,6 +9,7 @@ struct HomeView: View {
     @State private var topSongs: [Song] = []
     @State private var topAlbums: [CollectionItem] = []
     @State private var featPlaylists: [CollectionItem] = []
+    @State private var recSongs: [Song] = []
     @State private var groups: [(title: String, items: [CollectionItem])] = []
     @State private var appleHistory: [Song] = []
     @State private var failed = false
@@ -40,6 +41,26 @@ struct HomeView: View {
                 Text(failed ? settings.t("home_fail") : settings.t("home_sub"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                if !featPlaylists.isEmpty {
+                    SectionTitle(text: settings.t("rec_playlists"))
+                    shelf(featPlaylists) { item in tap(item) }
+                }
+                if !recSongs.isEmpty {
+                    SectionTitle(text: settings.t("rec_songs"))
+                    songRail(recSongs)
+                }
+                if !topSongs.isEmpty {
+                    SectionTitle(text: settings.t("top_songs"))
+                    songRail(topSongs)
+                }
+                if !topAlbums.isEmpty {
+                    SectionTitle(text: settings.t("top_albums"))
+                    shelf(topAlbums) { a in nav.detail = .collection(kind: "album", id: a.id) }
+                }
+                ForEach(Array(groups.enumerated()), id: \.offset) { _, g in
+                    SectionTitle(text: g.title.isEmpty ? settings.t("feat_playlists") : g.title)
+                    shelf(g.items) { item in tap(item) }
+                }
                 if !mergedHistory.isEmpty {
                     SectionTitle(text: settings.t("recent_played"))
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -50,38 +71,6 @@ struct HomeView: View {
                         }
                         .padding(.horizontal, 2)
                     }
-                }
-                ForEach(Array(groups.enumerated()), id: \.offset) { _, g in
-                    SectionTitle(text: g.title.isEmpty ? settings.t("feat_playlists") : g.title)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 14) {
-                            ForEach(g.items) { item in
-                                CollectionCard(item: item)
-                                    .onTapGesture { tap(item) }
-                            }
-                        }
-                        .padding(.horizontal, 2)
-                    }
-                }
-                if !topSongs.isEmpty {
-                    SectionTitle(text: settings.t("top_songs"))
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHGrid(rows: Array(repeating: GridItem(.fixed(60), spacing: 6), count: 3), spacing: 14) {
-                            ForEach(Array(topSongs.enumerated()), id: \.element.id) { i, s in
-                                SongRow(song: s, index: i, onTap: { player.playSongs(topSongs, start: i) }, onAdd: { addSong = s })
-                                    .frame(width: colW)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-                if !topAlbums.isEmpty {
-                    SectionTitle(text: settings.t("top_albums"))
-                    shelf(topAlbums) { a in nav.detail = .collection(kind: "album", id: a.id) }
-                }
-                if !featPlaylists.isEmpty {
-                    SectionTitle(text: settings.t("feat_playlists"))
-                    shelf(featPlaylists) { p in nav.detail = .collection(kind: "playlist", id: p.id) }
                 }
                 if !loaded {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
@@ -105,6 +94,18 @@ struct HomeView: View {
                 }
             }
             .padding(.horizontal, 2)
+        }
+    }
+
+    private func songRail(_ songs: [Song]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHGrid(rows: Array(repeating: GridItem(.fixed(60), spacing: 6), count: 3), spacing: 14) {
+                ForEach(Array(songs.enumerated()), id: \.element.id) { i, s in
+                    SongRow(song: s, index: i, onTap: { player.playSongs(songs, start: i) }, onAdd: { addSong = s })
+                        .frame(width: colW)
+                }
+            }
+            .padding(.vertical, 4)
         }
     }
 
@@ -151,6 +152,7 @@ struct HomeView: View {
         if engine.authorized {
             appleHistory = (try? await api.recentPlayed()) ?? []
             groups = await api.recommendationGroups()
+            recSongs = await api.recommendationSongs()
         }
     }
 }

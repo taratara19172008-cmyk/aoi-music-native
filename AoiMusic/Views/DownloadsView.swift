@@ -50,14 +50,24 @@ struct FavoritesView: View {
         }
         .scrollIndicators(.hidden)
         .task { await load() }
+        .onChange(of: engine.authorized) { _, now in
+            if now { Task { await load() } }
+        }
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
     }
 
     private func load() async {
-        if loaded { return }
+        // Do not latch "loaded" before an authorized fetch: this view can appear
+        // before the engine finishes authorizing, and it must retry once it does
+        // (the onChange above re-runs load when authorization lands).
+        guard engine.authorized else { loaded = true; return }
         loaded = true
-        guard engine.authorized else { return }
-        songs = await api.favoriteSongs()
-        albums = (try? await api.libraryAlbums()) ?? []
+        let apiSongs = await api.favoriteSongs()
+        // Locally persisted loves always show, even before Apple's side syncs.
+        var merged = player.favSongs
+        let seen = Set(merged.map { $0.playbackId })
+        merged += apiSongs.filter { !seen.contains($0.playbackId) }
+        songs = merged
+        albums = await api.favoriteAlbums()
     }
 }

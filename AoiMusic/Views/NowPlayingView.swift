@@ -28,6 +28,8 @@ struct NowPlayingView: View {
     @State private var lyrics: [LyricLine] = []
     @State private var lyricsNote: String = ""
     @State private var lyricsSongId: String = ""
+    @State private var motionURLStr: String?
+    @State private var motionSongId: String = ""
 
     var body: some View {
         ZStack {
@@ -56,24 +58,28 @@ struct NowPlayingView: View {
             .frame(maxHeight: .infinity)
             ToastOverlay(text: player.toast)
         }
-        .onChange(of: player.current?.id) { _ in loadLyrics() }
-        .onAppear { loadLyrics() }
+        .onChange(of: player.current?.id) { _ in loadLyrics(); loadMotion() }
+        .onAppear { loadLyrics(); loadMotion() }
     }
 
+    // The cover is the background now: full-bleed artwork — or the album's motion
+    // artwork video when it has one — with a scrim so the controls stay readable.
     private var background: some View {
         ZStack {
             Color(red: 0.16, green: 0.12, blue: 0.18)
-            if let s = player.current?.art(200, 200), let url = URL(string: s) {
+            if let m = motionURLStr, let u = URL(string: m) {
+                LoopingVideo(url: u)
+            } else if let s = player.current?.art(800, 800), let url = URL(string: s) {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let img): img.resizable().scaledToFill()
                     default: Color.clear
                     }
                 }
-                .blur(radius: 60)
-                .opacity(0.85)
             }
-            Color.black.opacity(0.18)
+            LinearGradient(
+                colors: [Color.black.opacity(0.30), Color.black.opacity(0.10), Color.black.opacity(0.55)],
+                startPoint: .top, endPoint: .bottom)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
@@ -86,10 +92,9 @@ struct NowPlayingView: View {
         case 1: lyricsView
         case 2: queueView
         default:
-            ArtworkImage(urlString: player.current?.art(640, 640), size: 300, corner: 16)
-                .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
-                .scaleEffect(player.isPlaying ? 1.0 : 0.94)
-                .animation(.spring(response: 0.5, dampingFraction: 0.8), value: player.isPlaying)
+            // No boxed artwork anymore — the cover fills the background behind
+            // everything; this panel just holds the space.
+            Color.clear
                 .frame(height: 320)
         }
     }
@@ -319,6 +324,16 @@ struct NowPlayingView: View {
     private func fmt(_ sec: Double) -> String {
         let s = Int(sec.rounded())
         return "\(s / 60):\(String(format: "%02d", s % 60))"
+    }
+
+    private func loadMotion() {
+        guard let cur = player.current, cur.id != motionSongId else { return }
+        motionSongId = cur.id
+        motionURLStr = nil
+        Task {
+            let u = await api.motionURLForSong(cur)
+            if player.current?.id == cur.id { motionURLStr = u }
+        }
     }
 
     private func loadLyrics() {

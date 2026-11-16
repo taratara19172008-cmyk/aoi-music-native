@@ -10,6 +10,8 @@ struct RadioView: View {
     @State private var playlists: [CollectionItem] = []
     @State private var loaded = false
 
+    private let gridCols = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
@@ -27,25 +29,19 @@ struct RadioView: View {
                 }
                 if !stations.isEmpty {
                     SectionTitle(text: settings.t("official_stations"))
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 14) {
-                            ForEach(stations) { item in
-                                stationCard(item)
-                            }
+                    LazyVGrid(columns: gridCols, spacing: 16) {
+                        ForEach(stations) { item in
+                            stationCard(item)
                         }
-                        .padding(.horizontal, 2)
                     }
                 }
                 if !playlists.isEmpty {
                     SectionTitle(text: settings.t("feat_playlists"))
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 14) {
-                            ForEach(playlists) { item in
-                                CollectionCard(item: item)
-                                    .onTapGesture { tap(item) }
-                            }
+                    LazyVGrid(columns: gridCols, spacing: 16) {
+                        ForEach(playlists) { item in
+                            CollectionCard(item: item, width: 0)
+                                .onTapGesture { tap(item) }
                         }
-                        .padding(.horizontal, 2)
                     }
                 }
                 if !loaded { ProgressView().frame(maxWidth: .infinity).padding(.top, 40) }
@@ -77,7 +73,8 @@ struct RadioView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 240, height: 150)
+            .frame(maxWidth: .infinity)
+            .aspectRatio(1.6, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             Text(item.title)
                 .font(.subheadline.weight(.semibold))
@@ -89,7 +86,7 @@ struct RadioView: View {
                     .lineLimit(1)
             }
         }
-        .frame(width: 240, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { tap(item) }
     }

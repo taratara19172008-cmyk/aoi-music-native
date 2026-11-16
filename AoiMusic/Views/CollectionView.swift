@@ -13,6 +13,7 @@ struct CollectionView: View {
     @State private var tracks: [Song] = []
     @State private var loaded = false
     @State private var albumFav = false
+    @State private var motionURLStr: String?
     @State private var addSong: Song?
     @State private var shareItem: ShareItem?
     @State private var showRename = false
@@ -109,8 +110,9 @@ struct CollectionView: View {
 
     @ViewBuilder
     private var heroSection: some View {
-        VStack(spacing: 10) {
-            ArtworkImage(urlString: item?.art(600, 600), size: 190, corner: 18)
+        VStack(spacing: 0) {
+            heroArtwork
+            VStack(spacing: 8) {
             Text(item?.title ?? "")
                 .font(.title3.weight(.bold))
                 .multilineTextAlignment(.center)
@@ -147,11 +149,39 @@ struct CollectionView: View {
                 }
             }
             .padding(.top, 4)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
+        .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
+    }
+
+    // The cover IS the header background: full-bleed, edge to edge, fading into
+    // the page background at the bottom — no boxed frame. Albums with motion
+    // artwork play their animated cover here.
+    @ViewBuilder
+    private var heroArtwork: some View {
+        let w = UIScreen.main.bounds.width
+        ZStack {
+            if let m = motionURLStr, let u = URL(string: m) {
+                LoopingVideo(url: u)
+                    .frame(width: w, height: w)
+            } else {
+                ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
+            }
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.55),
+                    .init(color: Color(red: 0.93, green: 0.96, blue: 0.99), location: 1.0),
+                ],
+                startPoint: .top, endPoint: .bottom)
+        }
+        .frame(width: w, height: w)
+        .clipped()
     }
 
     private func actionButton(title: String, filled: Bool, red: Bool = false, action: @escaping () -> Void) -> some View {
@@ -206,8 +236,11 @@ struct CollectionView: View {
             tracks = tr
         } catch {}
         loaded = true
-        if kind == "album", engine.authorized {
-            albumFav = await api.rating(kind: "albums", id: id)
+        if kind == "album" {
+            motionURLStr = await api.motionURL(kind: "albums", id: id)
+            if engine.authorized {
+                albumFav = await api.rating(kind: "albums", id: id)
+            }
         }
     }
 }

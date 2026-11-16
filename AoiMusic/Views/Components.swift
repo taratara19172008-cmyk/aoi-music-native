@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import AVKit
 
 struct EngineHost: UIViewRepresentable {
     let webView: WKWebView
@@ -184,10 +185,98 @@ struct SectionTitle: View {
     var text: String
     var body: some View {
         Text(text)
-            .font(.title3.weight(.bold))
+            .font(.system(.title3, design: .serif).weight(.bold))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 18)
             .padding(.bottom, 6)
+    }
+}
+
+// Muted, auto-looping video used for Apple Music motion artwork (animated covers).
+struct LoopingVideo: UIViewRepresentable {
+    var url: URL
+    func makeUIView(context: Context) -> LoopingVideoView { LoopingVideoView(url: url) }
+    func updateUIView(_ uiView: LoopingVideoView, context: Context) { uiView.setURL(url) }
+    static func dismantleUIView(_ uiView: LoopingVideoView, coordinator: ()) { uiView.stop() }
+}
+
+final class LoopingVideoView: UIView {
+    private var player: AVPlayer?
+    private var playerLayer: AVPlayerLayer?
+    private var curURL: URL?
+    private var endObs: NSObjectProtocol?
+    init(url: URL) {
+        super.init(frame: .zero)
+        setURL(url)
+    }
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        playerLayer?.frame = bounds
+    }
+    func setURL(_ url: URL) {
+        if curURL == url, player != nil { player?.play(); return }
+        stop()
+        curURL = url
+        let item = AVPlayerItem(url: url)
+        let p = AVPlayer(playerItem: item)
+        p.isMuted = true
+        p.actionAtItemEnd = .none
+        let l = AVPlayerLayer(player: p)
+        l.videoGravity = .resizeAspectFill
+        l.frame = bounds
+        layer.addSublayer(l)
+        playerLayer = l
+        player = p
+        endObs = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak p] _ in
+            p?.seek(to: .zero)
+            p?.play()
+        }
+        p.play()
+    }
+    func stop() {
+        player?.pause()
+        if let o = endObs { NotificationCenter.default.removeObserver(o); endObs = nil }
+        playerLayer?.removeFromSuperlayer()
+        playerLayer = nil
+        player = nil
+        curURL = nil
+    }
+}
+
+// Full-screen player for an artist's music-video previews.
+struct MVPlayerView: View {
+    var url: URL
+    @State private var player: AVPlayer?
+    @Environment(\.dismiss) var dismiss
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if let player = player {
+                VideoPlayer(player: player)
+                    .ignoresSafeArea()
+            }
+            VStack {
+                HStack {
+                    Spacer()
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Color.white.opacity(0.2), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+            .padding(16)
+        }
+        .onAppear {
+            if player == nil { player = AVPlayer(url: url) }
+            player?.play()
+        }
+        .onDisappear { player?.pause() }
     }
 }
 
