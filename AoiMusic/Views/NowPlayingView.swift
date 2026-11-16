@@ -22,6 +22,7 @@ struct NowPlayingView: View {
     @EnvironmentObject var engine: EngineBridge
     @EnvironmentObject var api: APIClient
     @EnvironmentObject var nav: AppNav
+    @EnvironmentObject var downloads: DownloadManager
     @State private var panel: Int = 0 // 0 art, 1 lyrics, 2 queue
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
@@ -214,6 +215,28 @@ struct NowPlayingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
             if let cur = player.current {
+                Button {
+                    if downloads.isDownloaded(cur.playbackId) {
+                        player.showToast(settings.t("downloaded"))
+                    } else {
+                        downloads.download(cur)
+                        player.showToast(settings.t("downloading"))
+                    }
+                } label: {
+                    Group {
+                        if downloads.active.contains(cur.playbackId) {
+                            ProgressView()
+                                .tint(.white)
+                        } else {
+                            Image(systemName: downloads.isDownloaded(cur.playbackId) ? "checkmark.circle.fill" : "arrow.down.circle")
+                                .font(.system(size: 19, weight: .semibold))
+                                .foregroundStyle(downloads.isDownloaded(cur.playbackId) ? settings.accent : .white)
+                        }
+                    }
+                    .frame(width: 46, height: 46)
+                    .aoiGlass(corner: 14, interactive: true)
+                }
+                .buttonStyle(.plain)
                 Button { player.toggleFav(cur, lang: settings.lang) } label: {
                     Image(systemName: player.isFav(cur) ? "heart.fill" : "heart")
                         .font(.system(size: 19, weight: .semibold))
