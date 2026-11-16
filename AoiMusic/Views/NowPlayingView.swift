@@ -166,6 +166,8 @@ struct NowPlayingView: View {
             if let s = await api.songFull(id: cur.id), let aid = s.relationships?.albums?.data?.first?.id {
                 nav.showNowPlaying = false
                 nav.detail = .collection(kind: "album", id: aid)
+            } else {
+                player.showToast(settings.t("np_goto_fail"))
             }
         }
     }
@@ -181,6 +183,8 @@ struct NowPlayingView: View {
             if let s = await api.songFull(id: cur.id), let aid = s.relationships?.artists?.data?.first?.id {
                 nav.showNowPlaying = false
                 nav.detail = .artist(id: aid)
+            } else {
+                player.showToast(settings.t("np_goto_fail"))
             }
         }
     }
@@ -188,16 +192,24 @@ struct NowPlayingView: View {
     private var titleRow: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(player.current?.title ?? "—")
-                    .font(.system(size: 21, weight: .bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .onTapGesture { openAlbum() }
-                Text(player.current?.artist ?? "—")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Color.white.opacity(0.65))
-                    .lineLimit(1)
-                    .onTapGesture { openArtist() }
+                Button { openAlbum() } label: {
+                    Text(player.current?.title ?? "—")
+                        .font(.system(size: 21, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Button { openArtist() } label: {
+                    Text(player.current?.artist ?? "—")
+                        .font(.system(size: 18))
+                        .foregroundStyle(Color.white.opacity(0.65))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
