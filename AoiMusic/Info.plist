@@ -4,10 +4,14 @@
 <dict>
 	<key>CFBundleDisplayName</key>
 	<string>AppleMusic</string>
+	<key>CFBundleExecutable</key>
+	<string>AoiMusic</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.aoimusic.app</string>
 	<key>CFBundleName</key>
 	<string>AoiMusic</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>2.0</string>
 	<key>CFBundleVersion</key>
