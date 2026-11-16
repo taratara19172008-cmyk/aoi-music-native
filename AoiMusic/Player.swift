@@ -74,7 +74,7 @@ final class Player: ObservableObject {
         }
         engine.onItem = { [weak self] item in
             guard let self = self, self.useEngine, let item = item else { return }
-            if let idx = self.queue.firstIndex(where: { $0.id == item.id }) {
+            if let idx = self.queue.firstIndex(where: { $0.playbackId == item.id || $0.id == item.id }) {
                 if idx != self.index { self.index = idx }
                 self.current = self.queue[idx]
             } else if self.current?.id != item.id {
@@ -119,7 +119,7 @@ final class Player: ObservableObject {
         if engine.authorized {
             useEngine = true
             av.pause()
-            engine.playQueue(ids: songs.map { $0.id }, start: start, shuffle: shuffle, repeatMode: repeatMode)
+            engine.playQueue(ids: songs.map { $0.playbackId }, start: start, shuffle: shuffle, repeatMode: repeatMode)
             isPlaying = true
         } else {
             useEngine = false
