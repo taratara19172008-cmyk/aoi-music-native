@@ -17,20 +17,16 @@ struct ArtistView: View {
         ZStack {
             LinearGradient(colors: [Color(red: 0.93, green: 0.96, blue: 0.99), Color(red: 0.98, green: 0.92, blue: 0.95)], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
+            VStack(spacing: 0) {
+                HStack {
+                    backPill
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Button { nav.detail = nil } label: {
-                            Label(settings.t("back"), systemImage: "chevron.left")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .aoiGlass(corner: 20, interactive: true)
-                        Spacer()
-                    }
                     if let d = detail {
                         ZStack(alignment: .bottomLeading) {
                             AsyncImage(url: d.attributes?.artwork?.urlString(1200, 900).flatMap { URL(string: $0) }) { phase in
@@ -114,10 +110,25 @@ struct ArtistView: View {
                 .padding(.horizontal, 10)
             }
             .scrollIndicators(.hidden)
+            }
             ToastOverlay(text: player.toast)
         }
+        .frame(width: UIScreen.main.bounds.width)
         .task { await load() }
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
+    }
+
+    private var backPill: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "chevron.left").font(.subheadline.weight(.semibold))
+            Text(settings.t("back")).font(.subheadline.weight(.semibold))
+        }
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .aoiGlass(corner: 20)
+        .contentShape(Rectangle())
+        .onTapGesture { nav.detail = nil }
     }
 
     private func toggleArtistFav() {
