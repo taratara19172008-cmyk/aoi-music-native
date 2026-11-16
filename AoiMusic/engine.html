@@ -62,17 +62,22 @@ async function waitForTarget(targetId, ms) {
   return !!(it && (!targetId || it.id === targetId));
 }
 
+function queueIds() {
+  try { return (music.queue.items || []).map(it => it.id); } catch (e) { return []; }
+}
+
 async function startPlayback(intent) {
   wantPlaying = true;
   const targetId = intent.stationId ? null : intent.ids[intent.startIndex];
+  const aim = intent.actualIndex != null ? intent.actualIndex : intent.startIndex;
   for (let attempt = 0; attempt < 2; attempt++) {
     if (intent.seq !== intentSeq) return;
     try { await callMK(() => music.play(), 6000, 'play'); } catch (e) { /* verified below */ }
     if (intent.seq !== intentSeq) return;
     if (await waitForTarget(targetId, 2600)) return;
     if (intent.seq !== intentSeq) return;
-    if (!intent.stationId && intent.startIndex > 0) {
-      try { await callMK(() => music.changeToMediaAtIndex(intent.startIndex), 5000, 'changeItem'); } catch (e) {}
+    if (!intent.stationId && aim > 0) {
+      try { await callMK(() => music.changeToMediaAtIndex(aim), 5000, 'changeItem'); } catch (e) {}
     }
   }
   if (intent.seq === intentSeq && targetId) {
@@ -87,12 +92,21 @@ async function runIntent(intent) {
       await callMK(() => music.setQueue({ station: intent.stationId }), 9000, 'setQueue');
     } else {
       await callMK(() => music.setQueue({ songs: intent.ids, startIndex: intent.startIndex }), 9000, 'setQueue');
+      if (stale()) return;
+      // MusicKit silently drops ids it cannot resolve, which shifts every
+      // later position. Read the real queue back, tell the app what it
+      // actually holds, and aim by the target's real position from here on.
+      const qids = queueIds();
+      if (qids.length) post({ type: 'queue', ids: qids });
+      const actual = qids.indexOf(intent.ids[intent.startIndex]);
+      intent.actualIndex = actual >= 0 ? actual : intent.startIndex;
     }
     if (stale()) return;
     music.shuffleMode = appShuffle ? 1 : 0;
     music.repeatMode = mkRepeat(appRepeat);
-    if (!intent.stationId && intent.startIndex > 0) {
-      try { await callMK(() => music.changeToMediaAtIndex(intent.startIndex), 5000, 'changeItem'); } catch (e) {}
+    const aim = intent.actualIndex != null ? intent.actualIndex : intent.startIndex;
+    if (!intent.stationId && aim > 0) {
+      try { await callMK(() => music.changeToMediaAtIndex(aim), 5000, 'changeItem'); } catch (e) {}
     }
     if (stale()) return;
     await startPlayback(intent);

@@ -29,6 +29,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     var onItem: ((EngineItem?) -> Void)?
     var onProgress: ((Double, Double, Bool) -> Void)?
     var onError: ((String) -> Void)?
+    var onQueue: (([String]) -> Void)?
 
     func logEvent(_ s: String) {
         var lines = lastError.isEmpty ? [] : lastError.components(separatedBy: "\n")
@@ -101,6 +102,8 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
             }
         case "progress":
             onProgress?((body["t"] as? Double) ?? 0, (body["d"] as? Double) ?? 0, (body["isPlaying"] as? Bool) ?? false)
+        case "queue":
+            onQueue?((body["ids"] as? [String]) ?? [])
         case "error":
             logEvent(((body["where"] as? String) ?? "engine") + ": " + ((body["message"] as? String) ?? ""))
             onError?((body["where"] as? String) ?? "engine")

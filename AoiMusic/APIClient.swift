@@ -254,8 +254,33 @@ final class APIClient: ObservableObject {
         return r.data ?? []
     }
     func librarySongs() async throws -> [Song] {
-        let r: ListResponse<Song> = try await get("/v1/me/library/songs?limit=50")
-        return r.data ?? []
+        // Resolve every library song to its catalog counterpart (v106), the
+        // same treatment libraryArtists() already had. Without this, songs
+        // whose playParams carry no catalogId fell back to their library id,
+        // which the playback engine cannot queue — it dropped them silently
+        // and every index behind them shifted.
+        struct LibSong: Codable {
+            var id: String
+            var attributes: SongAttrs?
+            var relationships: LibRels?
+        }
+        struct LibRels: Codable { var catalog: CatRel? }
+        struct CatRel: Codable { var data: [CatStub]? }
+        struct CatStub: Codable { var id: String }
+        let r: ListResponse<LibSong> = try await get("/v1/me/library/songs?include=catalog&limit=50")
+        let libs = r.data ?? []
+        let catIds = libs.compactMap { $0.relationships?.catalog?.data?.first?.id }
+        var catMap: [String: Song] = [:]
+        if !catIds.isEmpty {
+            let cr: ListResponse<Song>? = try? await get("/v1/catalog/\(storefront)/songs?ids=\(catIds.joined(separator: ","))")
+            for s in cr?.data ?? [] { catMap[s.id] = s }
+        }
+        return libs.map { lib in
+            if let cid = lib.relationships?.catalog?.data?.first?.id, let cat = catMap[cid] {
+                return cat
+            }
+            return Song(id: lib.id, type: "library-songs", attributes: lib.attributes)
+        }
     }
     func libraryAlbums() async throws -> [CollectionItem] {
         let pairs = try await libraryAlbumPairs()
@@ -338,12 +363,24 @@ final class APIClient: ObservableObject {
             let cr: ListResponse<CollectionItem>? = try? await get("/v1/catalog/\(storefront)/artists?ids=\(catIds.joined(separator: ","))")
             for a in cr?.data ?? [] { catMap[a.id] = a }
         }
-        return libs.map { lib in
+        // One row per person (v106): the library can hold several records
+        // for the same artist (one per source album), and they all resolve
+        // to the same catalog artist — dedupe by catalog id, then by name.
+        var seen = Set<String>()
+        var out: [CollectionItem] = []
+        for lib in libs {
+            let item: CollectionItem
+            let key: String
             if let cid = lib.relationships?.catalog?.data?.first?.id, let cat = catMap[cid] {
-                return cat
+                item = cat
+                key = "id:" + cid
+            } else {
+                item = CollectionItem(id: lib.id, type: "library-artists", attributes: lib.attributes)
+                key = "name:" + (lib.attributes?.name ?? lib.id).lowercased()
             }
-            return CollectionItem(id: lib.id, type: "library-artists", attributes: lib.attributes)
+            if seen.insert(key).inserted { out.append(item) }
         }
+        return out
     }
 
     func createPlaylist(name: String, song: Song?) async throws {
@@ -364,6 +401,18 @@ final class APIClient: ObservableObject {
         let cid = (try? await resolveCatalogId(song)) ?? song.id
         _ = try await request(path: "/v1/me/library/playlists/\(pid)/tracks", method: "POST", body: ["data": [["id": cid, "type": "songs"]]])
     }
+    // Create a playlist with all its tracks in one call (the AI chat's
+    // "save as playlist"); songs are catalog songs, so playbackId is the id
+    // the create endpoint expects.
+    func createPlaylistWithTracks(name: String, songs: [Song]) async throws {
+        var body: [String: Any] = ["attributes": ["name": name]]
+        if !songs.isEmpty {
+            let data: [[String: String]] = songs.map { ["id": $0.playbackId, "type": "songs"] }
+            body["relationships"] = ["tracks": ["data": data]]
+        }
+        _ = try await request(path: "/v1/me/library/playlists", method: "POST", body: body)
+    }
+
     func removeFromPlaylist(pid: String, librarySongId: String) async throws {
         let q = "?ids[library-songs]=\(librarySongId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? librarySongId)&mode=all"
         _ = try await request(path: "/v1/me/library/playlists/\(pid)/tracks\(q)", method: "DELETE")

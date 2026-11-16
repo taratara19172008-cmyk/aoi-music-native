@@ -37,6 +37,11 @@ struct Song: Codable, Identifiable, Hashable {
     var album: String { attributes?.albumName ?? "" }
     var previewURL: String? { attributes?.previews?.first?.url }
     var playbackId: String { attributes?.playParams?.catalogId ?? id }
+    // True when this song carries a catalog identity the web engine can
+    // queue. Library songs that never resolved to a catalog counterpart
+    // (uploaded or unmatched tracks) have none — queueing their library id
+    // makes MusicKit silently drop the item and shift every index after it.
+    var isEnginePlayable: Bool { type != "library-songs" || playbackId != id }
     func art(_ w: Int, _ h: Int) -> String? { attributes?.artwork?.urlString(w, h) }
 }
 

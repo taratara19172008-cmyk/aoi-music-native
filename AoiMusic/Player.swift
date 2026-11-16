@@ -122,6 +122,18 @@ final class Player: ObservableObject {
             if let c = self.current { self.recordHistory(c) }
             self.updateNowPlayingInfo()
         }
+        engine.onQueue = { [weak self] ids in
+            guard let self = self, self.useEngine, !ids.isEmpty else { return }
+            // The engine's queue is the truth: MusicKit may have dropped
+            // items it could not resolve. Rebuild our queue in the engine's
+            // order so indices and highlighting agree with what plays.
+            guard let curId = self.current?.playbackId, ids.contains(curId) else { return }
+            let byId = Dictionary(self.queue.map { ($0.playbackId, $0) }, uniquingKeysWith: { a, _ in a })
+            let rebuilt = ids.compactMap { byId[$0] }
+            guard !rebuilt.isEmpty else { return }
+            self.queue = rebuilt
+            if let i = rebuilt.firstIndex(where: { $0.playbackId == curId }) { self.index = i }
+        }
         engine.onError = { [weak self] kind in
             // Only a failed playback attempt may surface the "playback failed" toast,
             // and only if nothing actually started playing shortly after (the engine
@@ -183,22 +195,46 @@ final class Player: ObservableObject {
     // MARK: - transport
     func playSongs(_ songs: [Song], start: Int) {
         guard !songs.isEmpty, songs.indices.contains(start) else { return }
-        queue = songs
-        index = start
-        current = songs[start]
-        recordHistory(songs[start])
+        var list = songs
+        var startAt = start
+        if engine.authorized {
+            // Songs without a catalog identity cannot be queued in the
+            // engine at all: MusicKit drops them silently and every later
+            // index shifts — exactly the Library/Favorites "tapped one
+            // song, heard another" bug. Filter them out up front and keep
+            // the tapped song's position honest.
+            let target = songs[start]
+            guard target.isEnginePlayable else {
+                showToast(Strings.get("unplayable", lang))
+                return
+            }
+            list = songs.filter { $0.isEnginePlayable }
+            startAt = list.firstIndex(where: { $0.id == target.id }) ?? 0
+        }
+        queue = list
+        index = startAt
+        current = list[startAt]
+        recordHistory(list[startAt])
         if engine.authorized {
             useEngine = true
             av.pause()
-            let ids = songs.map { $0.playbackId }
-            pendingPlay = (ids, start, nil, Date(), false)
-            engine.playQueue(ids: ids, start: start, shuffle: shuffle, repeatMode: repeatMode)
+            let ids = list.map { $0.playbackId }
+            pendingPlay = (ids, startAt, nil, Date(), false)
+            engine.playQueue(ids: ids, start: startAt, shuffle: shuffle, repeatMode: repeatMode)
             isPlaying = true
         } else {
             useEngine = false
             startPreview()
         }
         updateNowPlayingInfo()
+    }
+
+    // Long-press "Play All" on album / playlist cards.
+    func playCollection(_ item: CollectionItem, kind: String) {
+        Task {
+            let (_, tracks) = (try? await api.collectionTracks(kind: kind, id: item.id)) ?? (nil, [Song]())
+            if !tracks.isEmpty { playSongs(tracks, start: 0) }
+        }
     }
 
     private func startPreview() {
@@ -456,7 +492,10 @@ final class Player: ObservableObject {
             if let ev = e as? MPChangePlaybackPositionCommandEvent { self?.seek(ev.positionTime) }
             return .success
         }
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        // mixWithOthers (v106): the silent motion-artwork AVPlayers must
+        // coexist with the engine's audio instead of interrupting it — an
+        // un-mixed session made every animated cover pause the song.
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
         try? AVAudioSession.sharedInstance().setActive(true)
     }
     func updateNowPlayingInfo() {

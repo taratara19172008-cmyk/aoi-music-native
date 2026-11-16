@@ -80,6 +80,12 @@ enum Strings {
         "loading": "加载中…", "empty": "这里还没有内容", "tracks_count": "首歌",
         "queue_title": "播放队列", "searching": "搜索中…", "no_results": "没有找到结果",
         "bg_saved": "背景已换好", "bg_too_big": "图片太大了，换一张试试",
+        "ai": "AI", "ai_title": "AI 推荐", "play": "播放", "open": "打开", "fav_add": "收藏", "fav_remove": "取消收藏", "remove_from_pl": "从歌单移除", "unplayable": "这首歌暂时放不了",
+        "ai_hint": "跟我说你想听什么：心情、场景、年代、风格都行。挑好的歌会直接摆在这里，点一下就能放。",
+        "ai_ph": "想听点什么？", "ai_thinking": "正在为你挑歌…", "ai_save_pl": "存为歌单", "ai_rec": "AI 推荐", "ai_more": "换一批",
+        "ai_key": "DeepSeek API Key", "ai_key_ph": "粘贴你的 DeepSeek key", "ai_key_saved": "Key 已保存",
+        "ai_key_note": "只保存在这台手机上，用来调用 DeepSeek 生成推荐。不填的话 AI 功能不可用，其他功能不受影响。",
+        "ai_need_key": "先在设置里填入 DeepSeek API Key，AI 推荐才能工作", "ai_fail": "AI 刚才没回应，再试一次", "ai_no_match": "这次没在曲库里找到合适的歌，换个说法试试",
     ]
     static let en: [String: String] = [
         "home": "Home", "search": "Search", "radio": "Radio", "library": "Library", "settings": "Settings",
@@ -111,6 +117,12 @@ enum Strings {
         "loading": "Loading…", "empty": "Nothing here yet", "tracks_count": "songs",
         "queue_title": "Queue", "searching": "Searching…", "no_results": "No results",
         "bg_saved": "Background updated", "bg_too_big": "Image too large, try another",
+        "ai": "AI", "ai_title": "AI Picks", "play": "Play", "open": "Open", "fav_add": "Favorite", "fav_remove": "Unfavorite", "remove_from_pl": "Remove from Playlist", "unplayable": "This song can't be played right now",
+        "ai_hint": "Tell me what you feel like hearing — a mood, a scene, an era, a style. The songs I pick appear right here, ready to play.",
+        "ai_ph": "What do you want to hear?", "ai_thinking": "Picking songs for you…", "ai_save_pl": "Save as Playlist", "ai_rec": "AI Picks", "ai_more": "Show Another Batch",
+        "ai_key": "DeepSeek API Key", "ai_key_ph": "Paste your DeepSeek key", "ai_key_saved": "Key saved",
+        "ai_key_note": "Stored only on this phone and used to call DeepSeek for recommendations. Without it the AI features stay off; everything else works as before.",
+        "ai_need_key": "Add your DeepSeek API Key in Settings to use AI picks", "ai_fail": "The AI didn't answer just now — try again", "ai_no_match": "No matching songs in the catalog this time — try describing it differently",
     ]
     static func get(_ key: String, _ lang: String) -> String {
         if lang == "en" { return en[key] ?? zh[key] ?? key }
