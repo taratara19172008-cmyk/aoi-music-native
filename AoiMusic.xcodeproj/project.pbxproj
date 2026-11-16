@@ -5,7 +5,8 @@
 	objectVersion = 77;
 	objects = {
 		AA0000010000000000000001 /* AoiMusic.app */ = { isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AoiMusic.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000020000000000000002 /* AoiMusic */ = { isa = PBXFileSystemSynchronizedRootGroup; path = AoiMusic; sourceTree = "<group>"; };
+		AA0000020000000000000002 /* AoiMusic */ = { isa = PBXFileSystemSynchronizedRootGroup; exceptions = ( AA0000160000000000000016 /* Exceptions for "AoiMusic" folder in "AoiMusic" target */, ); path = AoiMusic; sourceTree = "<group>"; };
+		AA0000160000000000000016 /* Exceptions for "AoiMusic" folder in "AoiMusic" target */ = { isa = PBXFileSystemSynchronizedBuildFileExceptionSet; membershipExceptions = ( Info.plist, ); target = AA0000030000000000000003 /* AoiMusic */; };
 		AA0000030000000000000003 /* AoiMusic */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = AA0000100000000000000010 /* Build configuration list for PBXNativeTarget "AoiMusic" */;
