@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AoiEngine</title>
+<script>
+window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZCI6IldlYlBsYXlLaWQifQ.eyJpc3MiOiJBTVBXZWJQbGF5IiwiaWF0IjoxNzkzOTAwNzA4LCJleHAiOjE3OTk5NDg3MDgsInJvb3RfaHR0cHNfb3JpZ2luIjpbImFwcGxlLmNvbSJdfQ.7L-PYJHjO8PpFdhKS-OSkf_snyFvg5cq-JDERUs_N_UcUX9Vk0kf1WLatgDeEvhB_Arg1b5Tl-99G1v6hUwH0A", relayBase: "https://aoi-relay.vercel.app/api/relay" };
+</script>
+<script>window.__mkScript = 'pending';</script>
+<script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" async onload="window.__mkScript='loaded'" onerror="window.__mkScript='error'"></script>
+</head>
+<body>
+<script>
+'use strict';
+function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
+post({ type: 'boot' });
+const swReady = Promise.resolve();
+let music = null;
+// serialized playback ops (same lesson as the web app: never let two ops collide)
+let opChain = Promise.resolve(), opBusy = 0;
+function op(fn) { opBusy++; const run = async () => { try { return await fn(); } finally { opBusy--; } }; const p = opChain.then(run, run); opChain = p.catch(() => {}); return p; }
+// app modes: 0 off, 1 all, 2 one -> MusicKit: 0 off, 1 one, 2 all
+const mkRepeat = m => m === 1 ? 2 : m === 2 ? 1 : 0;
+let appRepeat = 0, appShuffle = false;
+
+function itemJSON() {
+  const it = music && music.nowPlayingItem;
+  if (!it) return null;
+  const a = it.attributes || {};
+  return {
+    id: it.id || a.id || '',
+    title: it.title || a.name || '',
+    artist: it.artistName || a.artistName || '',
+    album: it.albumName || a.albumName || '',
+    artwork: (it.artwork && it.artwork.url) || it.artworkURL || (a.artwork && a.artwork.url) || '',
+    duration: (typeof it.playbackDuration === 'number' ? it.playbackDuration : (a.durationInMillis ? a.durationInMillis / 1000 : 0)) || music.currentPlaybackDuration || 0
+  };
+}
+function sendState() {
+  if (!music) return;
+  post({ type: 'state', isPlaying: !!music.isPlaying, state: music.playbackState });
+}
+function sendAuth() {
+  if (!music) return;
+  post({ type: 'auth', authorized: !!music.isAuthorized, storefront: music.storefrontId || '', token: music.musicUserToken || '' });
+}
+setInterval(() => {
+  if (!music) return;
+  post({ type: 'progress', t: music.currentPlaybackTime || 0, d: music.currentPlaybackDuration || 0, isPlaying: !!music.isPlaying });
+}, 500);
+
+let mkInitStarted = false;
+async function initMK() {
+  if (mkInitStarted || !window.MusicKit) return;
+  mkInitStarted = true;
+  post({ type: 'log', message: 'configure start' });
+  try {
+    await MusicKit.configure({ developerToken: window.AOI_CONFIG.developerToken, app: { name: 'AoiMusic', build: '2.0.0' } });
+    music = MusicKit.getInstance();
+    window.__aoiHasMusic = true;
+    music.addEventListener('playbackStateDidChange', sendState);
+    music.addEventListener('nowPlayingItemDidChange', () => { post({ type: 'item', item: itemJSON() }); sendState(); });
+    await swReady;
+    post({ type: 'ready' });
+    sendAuth();
+  } catch (e) { post({ type: 'error', where: 'configure', message: String((e && e.message) || e) }); }
+}
+document.addEventListener('musickitloaded', initMK);
+// the async script can execute before the listener above attaches (fast cache) — poll for the global as a fallback
+let lastMkFlag = 'pending';
+const mkPoll = setInterval(() => {
+  if (window.__mkScript !== lastMkFlag) { lastMkFlag = window.__mkScript; post({ type: 'log', message: 'script=' + lastMkFlag }); }
+  if (music) { clearInterval(mkPoll); return; }
+  if (window.MusicKit) initMK();
+}, 500);
+
+setTimeout(() => { if (!music) post({ type: 'error', where: 'musickit', message: 'load timeout, script=' + window.__mkScript + ', global=' + (typeof window.MusicKit) }); }, 10000);
+
+window.AoiEngine = {
+  async authorize() {
+    if (!music) { post({ type: 'error', where: 'authorize', message: 'engine not ready' }); return; }
+    post({ type: 'log', message: 'origin: ' + location.origin });
+    try { await music.authorize(); } catch (e) { post({ type: 'error', where: 'authorize', message: String((e && e.message) || e) }); }
+    sendAuth();
+  },
+  async unauthorize() {
+    if (!music) return;
+    try { await music.unauthorize(); } catch (e) {}
+    sendAuth();
+  },
+  playQueue(ids, startIndex, shuffle, repeat) {
+    if (!music || !ids || !ids.length) return;
+    appShuffle = !!shuffle; appRepeat = repeat | 0;
+    return op(async () => {
+      await music.setQueue({ songs: ids, startIndex: startIndex | 0 });
+      music.shuffleMode = appShuffle ? 1 : 0;
+      music.repeatMode = mkRepeat(appRepeat);
+      if ((startIndex | 0) > 0) { try { await music.changeToMediaAtIndex(startIndex | 0); } catch (e) {} }
+      await music.play();
+    }).catch(e => post({ type: 'error', where: 'playQueue', message: String((e && e.message) || e) }));
+  },
+  play() { if (music) return op(() => music.play()).catch(() => {}); },
+  pause() { if (music) return op(() => music.pause()).catch(() => {}); },
+  next() { if (music) return op(() => music.skipToNextItem()).catch(() => {}); },
+  prev() { if (music) return op(() => music.skipToPreviousItem()).catch(() => {}); },
+  jumpTo(i) {
+    if (!music) return;
+    return op(async () => {
+      try { await music.changeToMediaAtIndex(i | 0); return; } catch (e) {}
+    }).catch(() => {});
+  },
+  playStation(id) {
+    if (!music) return;
+    return op(async () => { await music.setQueue({ station: id }); await music.play(); })
+      .catch(e => post({ type: 'error', where: 'station', message: String((e && e.message) || e) }));
+  },
+  seek(sec) { if (music) { try { music.seekToTime(Number(sec) || 0); } catch (e) {} } },
+  setShuffle(b) { appShuffle = !!b; if (music) music.shuffleMode = appShuffle ? 1 : 0; },
+  setRepeat(m) { appRepeat = m | 0; if (music) music.repeatMode = mkRepeat(appRepeat); },
+  state() { sendState(); const it = itemJSON(); if (it) post({ type: 'item', item: it }); }
+};
+</script>
+</body>
+</html>
