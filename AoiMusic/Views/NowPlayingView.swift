@@ -39,6 +39,7 @@ struct NowPlayingView: View {
                     .frame(width: 44, height: 5)
                     .padding(.top, 10)
                     .onTapGesture { nav.showNowPlaying = false }
+                Spacer()
                 middle
                 titleRow
                 seekBar
@@ -49,7 +50,10 @@ struct NowPlayingView: View {
                 Spacer(minLength: 6)
             }
             .padding(.horizontal, 22)
-            .frame(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
+            .padding(.top, 36)
+            .padding(.bottom, 10)
+            .frame(width: UIScreen.main.bounds.width)
+            .frame(maxHeight: .infinity)
             ToastOverlay(text: player.toast)
         }
         .onChange(of: player.current?.id) { _ in loadLyrics() }
