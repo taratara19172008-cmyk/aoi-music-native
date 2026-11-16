@@ -50,12 +50,6 @@ struct HomeView: View {
                         .padding(.horizontal, 2)
                     }
                 }
-                if !mergedHistory.isEmpty {
-                    SectionTitle(text: settings.t("recent_played"))
-                    ForEach(Array(mergedHistory.enumerated()), id: \.element.id) { i, s in
-                        SongRow(song: s, index: i, onTap: { player.playSongs(mergedHistory, start: i) }, onAdd: { addSong = s })
-                    }
-                }
                 if !topSongs.isEmpty {
                     SectionTitle(text: settings.t("top_songs"))
                     ForEach(Array(topSongs.enumerated()), id: \.element.id) { i, s in
@@ -72,6 +66,12 @@ struct HomeView: View {
                             }
                         }
                         .padding(.horizontal, 2)
+                    }
+                }
+                if !mergedHistory.isEmpty {
+                    SectionTitle(text: settings.t("recent_played"))
+                    ForEach(Array(mergedHistory.enumerated()), id: \.element.id) { i, s in
+                        SongRow(song: s, index: i, onTap: { player.playSongs(mergedHistory, start: i) }, onAdd: { addSong = s })
                     }
                 }
                 if !loaded {
@@ -99,6 +99,11 @@ struct HomeView: View {
         loaded = true
         if engine.authorized {
             appleHistory = (try? await api.recentPlayed()) ?? []
+            if let recs = try? await api.recommendations() {
+                let pls = recs.filter { $0.type == "playlists" }
+                let seen = Set(featPlaylists.map { $0.id })
+                featPlaylists = pls.filter { !seen.contains($0.id) } + featPlaylists
+            }
         }
     }
 }
