@@ -323,10 +323,6 @@ struct NowPlayingView: View {
             do {
                 let lines = try await api.lyrics(for: cur)
                 if player.current?.id == cur.id { lyrics = lines }
-            } catch let e as APIError {
-                if case .http(let code, _) = e, player.current?.id == cur.id {
-                    lyricsNote = settings.t("no_lyrics") + " (API \(code))"
-                }
             } catch {
                 if player.current?.id == cur.id { lyricsNote = settings.t("no_lyrics") }
             }
