@@ -22,7 +22,8 @@ struct RootView: View {
     @EnvironmentObject var nav: AppNav
     @State private var page: Page = .home
     @State private var dragTarget: Page? = nil
-    @Namespace private var lensNS
+    @State private var lensY: CGFloat? = nil
+    private let mainPages: [Page] = [.home, .search, .radio, .library]
 
     var body: some View {
         ZStack {
@@ -105,16 +106,41 @@ struct RootView: View {
         [Page.home, .search, .radio, .library].min(by: { abs(railCenter($0) - y) < abs(railCenter($1) - y) }) ?? .home
     }
 
+    // The Muse-bar droplet: a live interactive-glass lens that rides on top of the
+    // main segment, follows the finger 1:1, stretches as it is pulled between
+    // items, and springs onto the chosen item on release.
     @ViewBuilder
-    private var lensBackground: some View {
+    private var railLens: some View {
+        let active = lensY != nil
+        let cy = lensY ?? railCenter(mainPages.contains(page) ? page : .home)
+        let near = railPage(atY: cy)
+        let pull = active ? min(0.30, abs(cy - railCenter(near)) / 240.0) : 0
         let rr = RoundedRectangle(cornerRadius: 19, style: .continuous)
-        if #available(iOS 26.0, *) {
-            Color.clear
-                .glassEffect(.regular.interactive(), in: rr)
-                .glassEffectID("railLens", in: lensNS)
-        } else {
-            rr.fill(.white.opacity(0.35))
+        Group {
+            if #available(iOS 26.0, *) {
+                Color.clear
+                    .glassEffect(.regular.interactive(), in: rr)
+            } else {
+                rr.fill(.white.opacity(0.35))
+            }
         }
+        .frame(width: 66, height: 56)
+        .scaleEffect(x: 1 + pull * 0.35, y: 1 + pull)
+        .offset(y: cy - 28)
+        .opacity(active || mainPages.contains(page) ? 1 : 0)
+        .animation(active ? nil : .spring(response: 0.38, dampingFraction: 0.62), value: cy)
+    }
+
+    private func railItem(_ p: Page) -> some View {
+        let sel = (dragTarget ?? page) == p
+        return VStack(spacing: 3) {
+            Image(systemName: p.icon)
+                .font(.system(size: 21, weight: .semibold))
+            Text(settings.t(p.key))
+                .font(.system(size: 10, weight: .medium))
+        }
+        .foregroundStyle(sel ? settings.accent : Color.primary.opacity(0.75))
+        .frame(width: 62, height: 56)
     }
 
     private var rail: some View {
@@ -139,29 +165,37 @@ struct RootView: View {
     }
 
     private var railSegmentMain: some View {
-        VStack(spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(settings.accent.opacity(0.85))
-                    .frame(width: 46, height: 46)
-                Image(systemName: "music.note")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(.white)
+        ZStack(alignment: .top) {
+            VStack(spacing: 6) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(settings.accent.opacity(0.85))
+                        .frame(width: 46, height: 46)
+                    Image(systemName: "music.note")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .padding(.top, 12)
+                .padding(.bottom, 6)
+                ForEach(mainPages, id: \.self) { p in
+                    railItem(p)
+                }
+                Color.clear.frame(height: 6)
             }
-            .padding(.top, 12)
-            .padding(.bottom, 6)
-            ForEach([Page.home, .search, .radio, .library], id: \.self) { p in
-                railButton(p)
-            }
-            Color.clear.frame(height: 6)
+            railLens
         }
         .frame(width: 74)
-        .simultaneousGesture(
+        .contentShape(Rectangle())
+        .gesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { v in dragTarget = railPage(atY: v.location.y) }
+                .onChanged { v in
+                    lensY = min(max(v.location.y, railCenter(.home)), railCenter(.library))
+                    dragTarget = railPage(atY: v.location.y)
+                }
                 .onEnded { v in
                     page = railPage(atY: v.location.y)
                     dragTarget = nil
+                    lensY = nil
                 }
         )
         .animation(.spring(response: 0.42, dampingFraction: 0.70), value: dragTarget ?? page)
@@ -191,7 +225,16 @@ struct RootView: View {
             }
             .foregroundStyle(sel ? settings.accent : Color.primary.opacity(0.75))
             .frame(width: 62, height: 56)
-            .background { if sel { lensBackground } }
+            .background {
+                if sel {
+                    let rr = RoundedRectangle(cornerRadius: 19, style: .continuous)
+                    if #available(iOS 26.0, *) {
+                        Color.clear.glassEffect(.regular.interactive(), in: rr)
+                    } else {
+                        rr.fill(.white.opacity(0.35))
+                    }
+                }
+            }
         }
         .buttonStyle(.plain)
     }
