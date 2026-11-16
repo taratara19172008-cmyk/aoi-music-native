@@ -49,6 +49,7 @@ struct NowPlayingView: View {
                 Spacer(minLength: 6)
             }
             .padding(.horizontal, 22)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             ToastOverlay(text: player.toast)
         }
         .onChange(of: player.current?.id) { _ in loadLyrics() }
@@ -70,6 +71,8 @@ struct NowPlayingView: View {
             }
             Color.black.opacity(0.18)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
         .ignoresSafeArea()
     }
 
@@ -143,6 +146,7 @@ struct NowPlayingView: View {
                     .onTapGesture { player.jumpTo(i) }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(height: 320)
     }
@@ -171,6 +175,7 @@ struct NowPlayingView: View {
                         }
                     }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
             if let cur = player.current {
                 Button { player.toggleFav(cur, lang: settings.lang) } label: {
