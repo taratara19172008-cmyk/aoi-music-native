@@ -1,60 +1,63 @@
 import SwiftUI
 
-struct DownloadsView: View {
+struct FavoritesView: View {
+    @EnvironmentObject var api: APIClient
     @EnvironmentObject var player: Player
     @EnvironmentObject var settings: AppSettings
-    @EnvironmentObject var downloads: DownloadManager
+    @EnvironmentObject var engine: EngineBridge
+    @EnvironmentObject var nav: AppNav
+    @State private var songs: [Song] = []
+    @State private var albums: [CollectionItem] = []
+    @State private var loaded = false
+    @State private var addSong: Song?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
-                Text(settings.t("downloads"))
+                Text(settings.t("favorites"))
                     .font(.system(size: 30, weight: .bold, design: .serif))
                     .padding(.top, 14)
-                if downloads.items.isEmpty {
-                    Text(settings.t("no_downloads"))
+                if !engine.authorized {
+                    Text(settings.t("radio_note"))
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .padding(.top, 30)
-                }
-                ForEach(Array(downloads.items.enumerated()), id: \.element.id) { i, item in
-                    HStack(spacing: 10) {
-                        ArtworkImage(urlString: downloads.songStub(item).art(120, 120), size: 46, corner: 8)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.title)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                                .foregroundStyle(player.current?.id == item.id ? settings.accent : .primary)
-                            Text(item.artist + (item.album.isEmpty ? "" : " · \(item.album)"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 4)
-                        if player.current?.id == item.id {
-                            Image(systemName: "speaker.wave.2.fill")
-                                .font(.caption)
-                                .foregroundStyle(settings.accent)
-                        }
-                        Button {
-                            downloads.remove(item)
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 30, height: 30)
-                        }
-                        .buttonStyle(.plain)
+                        .padding(.top, 6)
+                } else {
+                    SectionTitle(text: settings.t("fav_songs"))
+                    if songs.isEmpty && loaded {
+                        Text(settings.t("no_fav_songs")).foregroundStyle(.secondary).padding(.top, 6)
                     }
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
-                    .contentShape(Rectangle())
-                    .onTapGesture { player.playDownloaded(downloads.items, start: i, manager: downloads) }
+                    ForEach(Array(songs.enumerated()), id: \.element.id) { i, s in
+                        SongRow(song: s, index: i, onTap: { player.playSongs(songs, start: i) }, onAdd: { addSong = s })
+                    }
+                    SectionTitle(text: settings.t("lib_albums"))
+                    if albums.isEmpty && loaded {
+                        Text(settings.t("empty")).foregroundStyle(.secondary).padding(.top, 6)
+                    }
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                        ForEach(albums) { a in
+                            CollectionCard(item: a, width: 0)
+                                .onTapGesture { nav.detail = .collection(kind: "album", id: a.id) }
+                        }
+                    }
+                    .padding(.top, 4)
                 }
+                if !loaded { ProgressView().frame(maxWidth: .infinity).padding(.top, 40) }
                 Spacer(minLength: 90)
             }
             .padding(.horizontal, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollIndicators(.hidden)
+        .task { await load() }
+        .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
+    }
+
+    private func load() async {
+        if loaded { return }
+        loaded = true
+        guard engine.authorized else { return }
+        songs = await api.favoriteSongs()
+        albums = (try? await api.libraryAlbums()) ?? []
     }
 }
