@@ -7,6 +7,35 @@
 		AA0000010000000000000001 /* AoiMusic.app */ = { isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AoiMusic.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000020000000000000002 /* AoiMusic */ = { isa = PBXFileSystemSynchronizedRootGroup; exceptions = ( AA0000160000000000000016 /* Exceptions for "AoiMusic" folder in "AoiMusic" target */, ); path = AoiMusic; sourceTree = "<group>"; };
 		AA0000160000000000000016 /* Exceptions for "AoiMusic" folder in "AoiMusic" target */ = { isa = PBXFileSystemSynchronizedBuildFileExceptionSet; membershipExceptions = ( Info.plist, ); target = AA0000030000000000000003 /* AoiMusic */; };
+		AA0000170000000000000017 /* AoiWidget.appex */ = { isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AoiWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000180000000000000018 /* AoiWidget */ = { isa = PBXFileSystemSynchronizedRootGroup; exceptions = ( AA0000190000000000000019 /* Exceptions for "AoiWidget" folder in "AoiWidget" target */, ); path = AoiWidget; sourceTree = "<group>"; };
+		AA0000190000000000000019 /* Exceptions for "AoiWidget" folder in "AoiWidget" target */ = { isa = PBXFileSystemSynchronizedBuildFileExceptionSet; membershipExceptions = ( Info.plist, ); target = AA0000200000000000000020 /* AoiWidget */; };
+		AA0000200000000000000020 /* AoiWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000240000000000000024 /* Build configuration list for PBXNativeTarget "AoiWidget" */;
+			buildPhases = (
+				AA0000210000000000000021 /* Sources */,
+				AA0000220000000000000022 /* Frameworks */,
+				AA0000230000000000000023 /* Resources */,
+			);
+			buildRules = ( );
+			dependencies = ( );
+			fileSystemSynchronizedGroups = ( AA0000180000000000000018 /* AoiWidget */, );
+			name = AoiWidget;
+			productName = AoiWidget;
+			productReference = AA0000170000000000000017 /* AoiWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		AA0000210000000000000021 /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
+		AA0000220000000000000022 /* Frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
+		AA0000230000000000000023 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
+		AA0000270000000000000027 /* Embed App Extensions */ = { isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = ( AA0000280000000000000028 /* AoiWidget.appex in Embed App Extensions */, ); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
+		AA0000280000000000000028 /* AoiWidget.appex in Embed App Extensions */ = { isa = PBXBuildFile; fileRef = AA0000170000000000000017 /* AoiWidget.appex */; settings = { ATTRIBUTES = ( RemoveHeadersOnCopy, ); }; };
+		AA0000290000000000000029 /* PBXTargetDependency */ = { isa = PBXTargetDependency; target = AA0000200000000000000020 /* AoiWidget */; targetProxy = AA0000300000000000000030 /* PBXContainerItemProxy */; };
+		AA0000300000000000000030 /* PBXContainerItemProxy */ = { isa = PBXContainerItemProxy; containerPortal = AA0000070000000000000007 /* AoiMusic */; proxyType = 1; remoteGlobalIDString = AA0000200000000000000020; remoteInfo = AoiWidget; };
+		AA0000240000000000000024 /* Build configuration list for PBXNativeTarget "AoiWidget" */ = { isa = XCConfigurationList; buildConfigurations = ( AA0000250000000000000025 /* Debug */, AA0000260000000000000026 /* Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		AA0000250000000000000025 /* Debug */ = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_ENTITLEMENTS = AoiWidget/AoiWidget.entitlements; CODE_SIGN_STYLE = Manual; CODE_SIGNING_ALLOWED = NO; CODE_SIGNING_REQUIRED = NO; CURRENT_PROJECT_VERSION = 2; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = AoiWidget/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); MARKETING_VERSION = 2.0; PRODUCT_BUNDLE_IDENTIFIER = com.aoimusic.app.widget; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+		AA0000260000000000000026 /* Release */ = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_ENTITLEMENTS = AoiWidget/AoiWidget.entitlements; CODE_SIGN_STYLE = Manual; CODE_SIGNING_ALLOWED = NO; CODE_SIGNING_REQUIRED = NO; CURRENT_PROJECT_VERSION = 2; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = AoiWidget/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); MARKETING_VERSION = 2.0; PRODUCT_BUNDLE_IDENTIFIER = com.aoimusic.app.widget; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_OPTIMIZATION_LEVEL = "-O"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
 		AA0000030000000000000003 /* AoiMusic */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = AA0000100000000000000010 /* Build configuration list for PBXNativeTarget "AoiMusic" */;
@@ -14,9 +43,12 @@
 				AA0000040000000000000004 /* Sources */,
 				AA0000050000000000000005 /* Frameworks */,
 				AA0000060000000000000006 /* Resources */,
+				AA0000270000000000000027 /* Embed App Extensions */,
 			);
 			buildRules = ( );
-			dependencies = ( );
+			dependencies = (
+				AA0000290000000000000029 /* PBXTargetDependency */,
+			);
 			fileSystemSynchronizedGroups = ( AA0000020000000000000002 /* AoiMusic */, );
 			name = AoiMusic;
 			productName = AoiMusic;
@@ -28,7 +60,7 @@
 		AA0000060000000000000006 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
 		AA0000070000000000000007 /* AoiMusic */ = {
 			isa = PBXProject;
-			attributes = { BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2600; LastUpgradeCheck = 2600; TargetAttributes = { AA0000030000000000000003 = { CreatedOnToolsVersion = 26.0; }; }; };
+			attributes = { BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2600; LastUpgradeCheck = 2600; TargetAttributes = { AA0000030000000000000003 = { CreatedOnToolsVersion = 26.0; }; AA0000200000000000000020 = { CreatedOnToolsVersion = 26.0; }; }; };
 			buildConfigurationList = AA0000110000000000000011 /* Build configuration list for PBXProject "AoiMusic" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -37,16 +69,17 @@
 			productRefGroup = AA0000090000000000000009 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-			targets = ( AA0000030000000000000003 /* AoiMusic */, );
+			targets = ( AA0000030000000000000003 /* AoiMusic */, AA0000200000000000000020 /* AoiWidget */, );
 		};
-		AA0000080000000000000008 = { isa = PBXGroup; children = ( AA0000020000000000000002 /* AoiMusic */, AA0000090000000000000009 /* Products */, ); sourceTree = "<group>"; };
-		AA0000090000000000000009 /* Products */ = { isa = PBXGroup; children = ( AA0000010000000000000001 /* AoiMusic.app */, ); name = Products; sourceTree = "<group>"; };
+		AA0000080000000000000008 = { isa = PBXGroup; children = ( AA0000020000000000000002 /* AoiMusic */, AA0000180000000000000018 /* AoiWidget */, AA0000090000000000000009 /* Products */, ); sourceTree = "<group>"; };
+		AA0000090000000000000009 /* Products */ = { isa = PBXGroup; children = ( AA0000010000000000000001 /* AoiMusic.app */, AA0000170000000000000017 /* AoiWidget.appex */, ); name = Products; sourceTree = "<group>"; };
 		AA0000100000000000000010 /* Build configuration list for PBXNativeTarget "AoiMusic" */ = { isa = XCConfigurationList; buildConfigurations = ( AA0000120000000000000012 /* Debug */, AA0000130000000000000013 /* Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		AA0000110000000000000011 /* Build configuration list for PBXProject "AoiMusic" */ = { isa = XCConfigurationList; buildConfigurations = ( AA0000140000000000000014 /* Debug */, AA0000150000000000000015 /* Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		AA0000120000000000000012 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = AoiMusic/AoiMusic.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
@@ -67,6 +100,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = AoiMusic/AoiMusic.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
