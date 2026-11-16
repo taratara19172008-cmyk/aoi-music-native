@@ -1,13 +1,14 @@
 import SwiftUI
 
 enum Page: String, CaseIterable {
-    case home, search, radio, library, settings
+    case home, search, radio, library, downloads, settings
     var icon: String {
         switch self {
         case .home: return "house.fill"
         case .search: return "magnifyingglass"
         case .radio: return "dot.radiowaves.left.and.right"
         case .library: return "square.grid.2x2.fill"
+        case .downloads: return "arrow.down.circle.fill"
         case .settings: return "gearshape.fill"
         }
     }
@@ -96,12 +97,12 @@ struct RootView: View {
         case .search: return 160
         case .radio: return 222
         case .library: return 284
-        case .settings: return railH - 40
+        default: return 284
         }
     }
 
     private func railPage(atY y: CGFloat) -> Page {
-        [Page.home, .search, .radio, .library, .settings].min(by: { abs(railCenter($0) - y) < abs(railCenter($1) - y) }) ?? .home
+        [Page.home, .search, .radio, .library].min(by: { abs(railCenter($0) - y) < abs(railCenter($1) - y) }) ?? .home
     }
 
     @ViewBuilder
@@ -127,26 +128,34 @@ struct RootView: View {
     }
 
     private var railBody: some View {
-        VStack(spacing: 6) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(settings.accent.opacity(0.85))
-                        .frame(width: 46, height: 46)
-                    Image(systemName: "music.note")
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                .padding(.top, 12)
-                .padding(.bottom, 6)
-                ForEach([Page.home, .search, .radio, .library], id: \.self) { p in
-                    railButton(p)
-                }
-                Spacer(minLength: 8)
-                railButton(.settings)
-                    .padding(.bottom, 12)
+        VStack(spacing: 0) {
+            railSegmentMain
+            Spacer(minLength: 24)
+            railSegmentBottom
         }
         .frame(width: 74)
         .frame(height: railH)
+        .padding(.vertical, 20)
+    }
+
+    private var railSegmentMain: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(settings.accent.opacity(0.85))
+                    .frame(width: 46, height: 46)
+                Image(systemName: "music.note")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .padding(.top, 12)
+            .padding(.bottom, 6)
+            ForEach([Page.home, .search, .radio, .library], id: \.self) { p in
+                railButton(p)
+            }
+            Color.clear.frame(height: 6)
+        }
+        .frame(width: 74)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { v in dragTarget = railPage(atY: v.location.y) }
@@ -157,7 +166,16 @@ struct RootView: View {
         )
         .animation(.spring(response: 0.42, dampingFraction: 0.70), value: dragTarget ?? page)
         .aoiGlass(corner: 37)
-        .padding(.vertical, 20)
+    }
+
+    private var railSegmentBottom: some View {
+        VStack(spacing: 6) {
+            railButton(.downloads)
+            railButton(.settings)
+        }
+        .frame(width: 74)
+        .padding(.vertical, 10)
+        .aoiGlass(corner: 37)
     }
 
     private func railButton(_ p: Page) -> some View {
@@ -185,6 +203,7 @@ struct RootView: View {
         case .search: SearchView()
         case .radio: RadioView()
         case .library: LibraryView()
+        case .downloads: DownloadsView()
         case .settings: SettingsView()
         }
     }
