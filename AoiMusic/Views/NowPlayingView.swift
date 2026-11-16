@@ -155,6 +155,36 @@ struct NowPlayingView: View {
         .frame(height: 320)
     }
 
+    private func openAlbum() {
+        if let aid = player.current?.relationships?.albums?.data?.first?.id {
+            nav.showNowPlaying = false
+            nav.detail = .collection(kind: "album", id: aid)
+            return
+        }
+        guard let cur = player.current else { return }
+        Task {
+            if let s = await api.songFull(id: cur.id), let aid = s.relationships?.albums?.data?.first?.id {
+                nav.showNowPlaying = false
+                nav.detail = .collection(kind: "album", id: aid)
+            }
+        }
+    }
+
+    private func openArtist() {
+        if let aid = player.current?.relationships?.artists?.data?.first?.id {
+            nav.showNowPlaying = false
+            nav.detail = .artist(id: aid)
+            return
+        }
+        guard let cur = player.current else { return }
+        Task {
+            if let s = await api.songFull(id: cur.id), let aid = s.relationships?.artists?.data?.first?.id {
+                nav.showNowPlaying = false
+                nav.detail = .artist(id: aid)
+            }
+        }
+    }
+
     private var titleRow: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
@@ -162,22 +192,12 @@ struct NowPlayingView: View {
                     .font(.system(size: 21, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .onTapGesture {
-                        if let aid = player.current?.relationships?.albums?.data?.first?.id {
-                            nav.showNowPlaying = false
-                            nav.detail = .collection(kind: "album", id: aid)
-                        }
-                    }
+                    .onTapGesture { openAlbum() }
                 Text(player.current?.artist ?? "—")
                     .font(.system(size: 18))
                     .foregroundStyle(Color.white.opacity(0.65))
                     .lineLimit(1)
-                    .onTapGesture {
-                        if let aid = player.current?.relationships?.artists?.data?.first?.id {
-                            nav.showNowPlaying = false
-                            nav.detail = .artist(id: aid)
-                        }
-                    }
+                    .onTapGesture { openArtist() }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
