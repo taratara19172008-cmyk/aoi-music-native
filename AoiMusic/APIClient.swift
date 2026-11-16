@@ -54,6 +54,20 @@ final class APIClient: ObservableObject {
         return r?.data?.first
     }
 
+    func songFull(for song: Song) async -> Song? {
+        let cid = (try? await resolveCatalogId(song)) ?? song.playbackId
+        var tried = Set<String>()
+        for sf in [storefront, "cn", "us"] where !tried.contains(sf) {
+            tried.insert(sf)
+            let r: ListResponse<Song>? = try? await get("/v1/catalog/\(sf)/songs/\(cid)?include=albums,artists")
+            if let s = r?.data?.first,
+               (s.relationships?.albums?.data?.first != nil) || (s.relationships?.artists?.data?.first != nil) {
+                return s
+            }
+        }
+        return nil
+    }
+
     func search(term: String) async throws -> SearchResponse {
         let q = term.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? term
         let r: SearchResponse = try await get("/v1/catalog/\(storefront)/search?term=\(q)&types=songs,albums,artists,playlists&limit=25")
