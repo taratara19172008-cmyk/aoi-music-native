@@ -24,15 +24,16 @@ struct CollectionView: View {
                 .ignoresSafeArea()
             VStack(spacing: 0) {
                 HStack {
-                    Button { nav.detail = nil } label: {
-                        Label(settings.t("back"), systemImage: "chevron.left")
-                            .font(.subheadline.weight(.semibold))
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left").font(.subheadline.weight(.semibold))
+                        Text(settings.t("back")).font(.subheadline.weight(.semibold))
                     }
-                    .buttonStyle(.plain)
                     .foregroundStyle(.primary)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .aoiGlass(corner: 20, interactive: true)
+                    .aoiGlass(corner: 20)
+                    .contentShape(Rectangle())
+                    .onTapGesture { nav.detail = nil }
                     Spacer()
                 }
                 .padding(.horizontal, 12)
