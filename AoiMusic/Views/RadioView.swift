@@ -56,11 +56,16 @@ struct RadioView: View {
     }
 
     private func tap(_ item: CollectionItem) {
-        if item.type == "stations" {
+        switch item.type {
+        case "stations":
             guard engine.authorized else { player.showToast(settings.t("radio_need")); return }
             player.playStation(item)
-        } else {
+        case "albums":
+            nav.detail = .collection(kind: "album", id: item.id)
+        case "playlists":
             nav.detail = .collection(kind: "playlist", id: item.id)
+        default:
+            player.showToast(settings.t("np_goto_fail"))
         }
     }
 
