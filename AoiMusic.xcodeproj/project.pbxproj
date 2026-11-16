@@ -1,0 +1,90 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = { };
+	objectVersion = 77;
+	objects = {
+		AA0000010000000000000001 /* AoiMusic.app */ = { isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AoiMusic.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000020000000000000002 /* AoiMusic */ = { isa = PBXFileSystemSynchronizedRootGroup; path = AoiMusic; sourceTree = "<group>"; };
+		AA0000030000000000000003 /* AoiMusic */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000100000000000000010 /* Build configuration list for PBXNativeTarget "AoiMusic" */;
+			buildPhases = (
+				AA0000040000000000000004 /* Sources */,
+				AA0000050000000000000005 /* Frameworks */,
+				AA0000060000000000000006 /* Resources */,
+			);
+			buildRules = ( );
+			dependencies = ( );
+			fileSystemSynchronizedGroups = ( AA0000020000000000000002 /* AoiMusic */, );
+			name = AoiMusic;
+			productName = AoiMusic;
+			productReference = AA0000010000000000000001 /* AoiMusic.app */;
+			productType = "com.apple.product-type.application";
+		};
+		AA0000040000000000000004 /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
+		AA0000050000000000000005 /* Frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
+		AA0000060000000000000006 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
+		AA0000070000000000000007 /* AoiMusic */ = {
+			isa = PBXProject;
+			attributes = { BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2600; LastUpgradeCheck = 2600; TargetAttributes = { AA0000030000000000000003 = { CreatedOnToolsVersion = 26.0; }; }; };
+			buildConfigurationList = AA0000110000000000000011 /* Build configuration list for PBXProject "AoiMusic" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = ( en, Base, );
+			mainGroup = AA0000080000000000000008;
+			productRefGroup = AA0000090000000000000009 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = ( AA0000030000000000000003 /* AoiMusic */, );
+		};
+		AA0000080000000000000008 = { isa = PBXGroup; children = ( AA0000020000000000000002 /* AoiMusic */, AA0000090000000000000009 /* Products */, ); sourceTree = "<group>"; };
+		AA0000090000000000000009 /* Products */ = { isa = PBXGroup; children = ( AA0000010000000000000001 /* AoiMusic.app */, ); name = Products; sourceTree = "<group>"; };
+		AA0000100000000000000010 /* Build configuration list for PBXNativeTarget "AoiMusic" */ = { isa = XCConfigurationList; buildConfigurations = ( AA0000120000000000000012 /* Debug */, AA0000130000000000000013 /* Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		AA0000110000000000000011 /* Build configuration list for PBXProject "AoiMusic" */ = { isa = XCConfigurationList; buildConfigurations = ( AA0000140000000000000014 /* Debug */, AA0000150000000000000015 /* Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		AA0000120000000000000012 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AoiMusic/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", );
+				MARKETING_VERSION = 2.0;
+				CURRENT_PROJECT_VERSION = 2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.aoimusic.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AA0000130000000000000013 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AoiMusic/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", );
+				MARKETING_VERSION = 2.0;
+				CURRENT_PROJECT_VERSION = 2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.aoimusic.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		AA0000140000000000000014 /* Debug */ = { isa = XCBuildConfiguration; buildSettings = { ALWAYS_SEARCH_USER_PATHS = NO; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; }; name = Debug; };
+		AA0000150000000000000015 /* Release */ = { isa = XCBuildConfiguration; buildSettings = { ALWAYS_SEARCH_USER_PATHS = NO; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; }; name = Release; };
+	};
+	rootObject = AA0000070000000000000007 /* AoiMusic */;
+}
