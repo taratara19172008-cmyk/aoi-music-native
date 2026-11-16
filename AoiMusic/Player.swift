@@ -1,0 +1,316 @@
+import Foundation
+import AVFoundation
+import MediaPlayer
+
+struct SearchEntity: Codable, Identifiable, Hashable {
+    var kind: String // song | album | playlist | artist
+    var id: String
+    var name: String
+    var sub: String
+    var art: String?
+    var song: Song?
+}
+
+final class Player: ObservableObject {
+    @Published var queue: [Song] = []
+    @Published var index: Int = -1
+    @Published var current: Song?
+    @Published var isPlaying = false
+    @Published var currentTime: Double = 0
+    @Published var duration: Double = 0
+    @Published var shuffle = false
+    @Published var repeatMode = 0 // app: 0 off, 1 all, 2 one
+    @Published var useEngine = false
+    @Published var history: [Song] = []
+    @Published var searchHistory: [SearchEntity] = []
+    @Published var favSet: Set<String> = []
+    @Published var toast: String?
+
+    let engine: EngineBridge
+    let api: APIClient
+    private let av = AVPlayer()
+    private var timeObserver: Any?
+    private var favChecked: Set<String> = []
+    private var toastWork: DispatchWorkItem?
+
+    init(engine: EngineBridge, api: APIClient) {
+        self.engine = engine
+        self.api = api
+        history = Self.loadJSON("aoi-history", [Song].self) ?? []
+        searchHistory = Self.loadJSON("aoi-search-entities", [SearchEntity].self) ?? []
+        setupEngine()
+        setupPreview()
+        setupRemote()
+    }
+
+    // MARK: - persistence helpers
+    static func loadJSON<T: Decodable>(_ key: String, _ type: T.Type) -> T? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+    static func saveJSON<T: Encodable>(_ key: String, _ value: T) {
+        if let data = try? JSONEncoder().encode(value) { UserDefaults.standard.set(data, forKey: key) }
+    }
+    func showToast(_ msg: String) {
+        toast = msg
+        toastWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.toast = nil }
+        toastWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2, execute: w)
+    }
+
+    // MARK: - engine wiring
+    private func setupEngine() {
+        engine.onState = { [weak self] playing in
+            guard let self = self, self.useEngine else { return }
+            self.isPlaying = playing
+            self.updateNowPlayingInfo()
+        }
+        engine.onProgress = { [weak self] t, d, playing in
+            guard let self = self, self.useEngine else { return }
+            self.currentTime = t
+            if d > 0 { self.duration = d }
+            self.isPlaying = playing
+        }
+        engine.onItem = { [weak self] item in
+            guard let self = self, self.useEngine, let item = item else { return }
+            if let idx = self.queue.firstIndex(where: { $0.id == item.id }) {
+                if idx != self.index { self.index = idx }
+                self.current = self.queue[idx]
+            } else if self.current?.id != item.id {
+                var s = Song(id: item.id, type: "songs", attributes: nil)
+                s.attributes = SongAttrs(name: item.title, artistName: item.artist, albumName: item.album, artwork: Artwork(url: item.artwork), previews: nil, durationInMillis: item.duration.map { Int($0 * 1000) })
+                self.current = s
+            }
+            if let c = self.current { self.recordHistory(c) }
+            self.updateNowPlayingInfo()
+        }
+        engine.onError = { [weak self] _ in
+            self?.showToast(Strings.get("play_fail", "zh"))
+        }
+    }
+
+    // MARK: - preview (AVPlayer) wiring
+    private func setupPreview() {
+        timeObserver = av.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.4, preferredTimescale: 600), queue: .main) { [weak self] time in
+            guard let self = self, !self.useEngine else { return }
+            self.currentTime = time.seconds.isFinite ? time.seconds : 0
+            if let d = self.av.currentItem?.duration.seconds, d.isFinite, d > 0 { self.duration = d }
+            self.isPlaying = self.av.timeControlStatus == .playing
+        }
+        NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { [weak self] _ in
+            guard let self = self, !self.useEngine else { return }
+            if self.repeatMode == 2 {
+                self.av.seek(to: .zero)
+                self.av.play()
+            } else {
+                self.next(auto: true)
+            }
+        }
+    }
+
+    // MARK: - transport
+    func playSongs(_ songs: [Song], start: Int) {
+        guard !songs.isEmpty, songs.indices.contains(start) else { return }
+        queue = songs
+        index = start
+        current = songs[start]
+        recordHistory(songs[start])
+        if engine.authorized {
+            useEngine = true
+            av.pause()
+            engine.playQueue(ids: songs.map { $0.id }, start: start, shuffle: shuffle, repeatMode: repeatMode)
+            isPlaying = true
+        } else {
+            useEngine = false
+            startPreview()
+        }
+        updateNowPlayingInfo()
+    }
+
+    private func startPreview() {
+        guard let cur = current else { return }
+        if let urlStr = cur.previewURL, let url = URL(string: urlStr) {
+            av.replaceCurrentItem(with: AVPlayerItem(url: url))
+            av.play()
+            isPlaying = true
+            duration = 30
+        } else {
+            showToast(Strings.get("no_preview", "zh"))
+        }
+    }
+
+    func togglePlay() {
+        guard current != nil else { return }
+        if useEngine {
+            if isPlaying { engine.pause() } else { engine.play() }
+            isPlaying.toggle()
+        } else {
+            if av.timeControlStatus == .playing { av.pause(); isPlaying = false }
+            else { av.play(); isPlaying = true }
+        }
+    }
+
+    func next(auto: Bool = false) {
+        if useEngine {
+            if !auto { engine.next() }
+            return // engine advances by itself on auto
+        }
+        guard !queue.isEmpty else { return }
+        if shuffle, queue.count > 1 {
+            var n = index
+            while n == index { n = Int.random(in: 0..<queue.count) }
+            index = n
+        } else if index < queue.count - 1 {
+            index += 1
+        } else if repeatMode == 1 {
+            index = 0
+        } else {
+            av.pause(); isPlaying = false; return
+        }
+        current = queue[index]
+        recordHistory(queue[index])
+        startPreview()
+        updateNowPlayingInfo()
+    }
+
+    func prev() {
+        if useEngine { engine.prev(); return }
+        if currentTime > 3 { seek(0); return }
+        if index > 0 {
+            index -= 1
+            current = queue[index]
+            recordHistory(queue[index])
+            startPreview()
+            updateNowPlayingInfo()
+        }
+    }
+
+    func jumpTo(_ i: Int) {
+        guard queue.indices.contains(i), i != index else { return }
+        if useEngine {
+            engine.jumpTo(i)
+            index = i
+            current = queue[i]
+            recordHistory(queue[i])
+        } else {
+            index = i
+            current = queue[i]
+            recordHistory(queue[i])
+            startPreview()
+        }
+        updateNowPlayingInfo()
+    }
+
+    func seek(_ sec: Double) {
+        if useEngine { engine.seek(sec) }
+        else { av.seek(to: CMTime(seconds: sec, preferredTimescale: 600)) }
+        currentTime = sec
+    }
+
+    func toggleShuffle() {
+        shuffle.toggle()
+        if useEngine { engine.setShuffle(shuffle) }
+    }
+    func cycleRepeat() {
+        repeatMode = (repeatMode + 1) % 3
+        if useEngine { engine.setRepeat(repeatMode) }
+    }
+
+    func playStation(_ st: CollectionItem) {
+        // Stations play through the engine queue endpoint shape; reuse engine playQueue is for songs,
+        // so stations are handled by a dedicated JS call:
+        useEngine = true
+        av.pause()
+        engine.callStation(st.id)
+        isPlaying = true
+    }
+
+    // MARK: - history
+    func recordHistory(_ song: Song) {
+        guard song.attributes?.name != nil else { return }
+        if history.first?.id == song.id { return }
+        history.removeAll { $0.id == song.id }
+        history.insert(song, at: 0)
+        history = Array(history.prefix(24))
+        Self.saveJSON("aoi-history", history)
+    }
+    func recordSearch(_ e: SearchEntity) {
+        searchHistory.removeAll { $0.kind == e.kind && $0.id == e.id }
+        searchHistory.insert(e, at: 0)
+        searchHistory = Array(searchHistory.prefix(12))
+        Self.saveJSON("aoi-search-entities", searchHistory)
+    }
+    func clearSearchHistory() {
+        searchHistory = []
+        Self.saveJSON("aoi-search-entities", searchHistory)
+    }
+
+    // MARK: - favorites
+    func favKey(_ song: Song) -> String {
+        (song.type == "library-songs" ? "library-songs" : "songs") + ":" + song.id
+    }
+    func isFav(_ song: Song) -> Bool { favSet.contains(favKey(song)) }
+    func hydrateFav(_ song: Song) {
+        let key = favKey(song)
+        guard !favChecked.contains(key) else { return }
+        favChecked.insert(key)
+        let kind = song.type == "library-songs" ? "library-songs" : "songs"
+        Task {
+            if await api.rating(kind: kind, id: song.id) { favSet.insert(key) }
+        }
+    }
+    func toggleFav(_ song: Song, lang: String) {
+        guard engine.authorized else { showToast(Strings.get("need_acct_fav", lang)); return }
+        let key = favKey(song)
+        let kind = song.type == "library-songs" ? "library-songs" : "songs"
+        let was = favSet.contains(key)
+        if was { favSet.remove(key) } else { favSet.insert(key) }
+        Task {
+            do {
+                if was { try await api.rateDelete(kind: kind, id: song.id); showToast(Strings.get("unfaved", lang)) }
+                else { try await api.rateWrite(kind: kind, id: song.id); showToast(Strings.get("faved", lang)) }
+            } catch {
+                if was { favSet.insert(key) } else { favSet.remove(key) }
+                showToast(Strings.get("fav_fail", lang))
+            }
+        }
+    }
+
+    // MARK: - lock screen / remote
+    private func setupRemote() {
+        let cc = MPRemoteCommandCenter.shared()
+        cc.playCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
+        cc.pauseCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
+        cc.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
+        cc.nextTrackCommand.addTarget { [weak self] _ in self?.next(); return .success }
+        cc.previousTrackCommand.addTarget { [weak self] _ in self?.prev(); return .success }
+        cc.changePlaybackPositionCommand.addTarget { [weak self] e in
+            if let ev = e as? MPChangePlaybackPositionCommandEvent { self?.seek(ev.positionTime) }
+            return .success
+        }
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
+    func updateNowPlayingInfo() {
+        guard let cur = current else { MPNowPlayingInfoCenter.default().nowPlayingInfo = nil; return }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: cur.title,
+            MPMediaItemPropertyArtist: cur.artist,
+            MPMediaItemPropertyAlbumTitle: cur.album,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
+            MPMediaItemPropertyPlaybackDuration: duration,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
+        ]
+        if let artStr = cur.art(512, 512), let url = URL(string: artStr) {
+            URLSession.shared.dataTask(with: url) { data, _, _ in
+                guard let data = data, let img = UIImage(data: data) else { return }
+                var i2 = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? info
+                i2[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = i2
+            }.resume()
+        }
+        info[MPMediaItemPropertyArtwork] = nil
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+}
