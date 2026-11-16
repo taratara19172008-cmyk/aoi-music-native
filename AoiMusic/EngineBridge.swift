@@ -112,7 +112,9 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     // MARK: - Swift -> JS
     private func call(_ js: String) {
         DispatchQueue.main.async { [weak self] in
-            self?.webView.evaluateJavaScript(js, completionHandler: nil)
+            self?.webView.evaluateJavaScript(js) { [weak self] _, err in
+                if let err = err { self?.logEvent("call failed: " + err.localizedDescription) }
+            }
         }
     }
     private func jsString(_ s: String) -> String {

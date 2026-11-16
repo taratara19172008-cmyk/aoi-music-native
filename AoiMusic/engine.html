@@ -17,12 +17,126 @@ function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } cat
 post({ type: 'boot' });
 const swReady = Promise.resolve();
 let music = null;
-// serialized playback ops (same lesson as the web app: never let two ops collide)
-let opChain = Promise.resolve(), opBusy = 0;
-function op(fn) { opBusy++; const run = async () => { try { return await fn(); } finally { opBusy--; } }; const p = opChain.then(run, run); opChain = p.catch(() => {}); return p; }
+// ---------- playback core (v105: intent-based, latest tap wins, nothing can wedge) ----------
+// The old design serialized every operation onto one promise chain: a single
+// MusicKit promise that never settles (setQueue/play are known to hang on a
+// stalled stream) blocked every later tap forever — songs would not start and
+// track switches silently never happened. Now every play request is an
+// "intent" with a sequence number; a single runner works on the NEWEST intent
+// only, every MusicKit await has a timeout, and after starting, the runner
+// verifies the target item actually plays and retries once if it does not.
 // app modes: 0 off, 1 all, 2 one -> MusicKit: 0 off, 1 one, 2 all
 const mkRepeat = m => m === 1 ? 2 : m === 2 ? 1 : 0;
 let appRepeat = 0, appShuffle = false;
+
+let intentSeq = 0;
+let pendingIntent = null;
+let runnerActive = false;
+let wantPlaying = false;
+let lastAdvanceAt = Date.now();
+let lastTime = -1;
+let stallRescues = 0;
+
+function isAbort(e) { const m = String((e && e.message) || e); return (e && e.name === 'AbortError') || /abort/i.test(m); }
+function reportErr(where, e) { if (isAbort(e)) return; post({ type: 'error', where, message: String((e && e.message) || e) }); }
+function withTimeout(p, ms, label) {
+  return Promise.race([
+    Promise.resolve(p),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout:' + label)), ms))
+  ]);
+}
+function callMK(fn, ms, label) {
+  let p;
+  try { p = fn(); } catch (e) { return Promise.reject(e); }
+  return withTimeout(p, ms, label);
+}
+
+async function waitForTarget(targetId, ms) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const it = music.nowPlayingItem;
+    if (it && (!targetId || it.id === targetId) && (music.isPlaying || music.playbackState === 2)) return true;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  const it = music.nowPlayingItem;
+  return !!(it && (!targetId || it.id === targetId));
+}
+
+async function startPlayback(intent) {
+  wantPlaying = true;
+  const targetId = intent.stationId ? null : intent.ids[intent.startIndex];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (intent.seq !== intentSeq) return;
+    try { await callMK(() => music.play(), 6000, 'play'); } catch (e) { /* verified below */ }
+    if (intent.seq !== intentSeq) return;
+    if (await waitForTarget(targetId, 2600)) return;
+    if (intent.seq !== intentSeq) return;
+    if (!intent.stationId && intent.startIndex > 0) {
+      try { await callMK(() => music.changeToMediaAtIndex(intent.startIndex), 5000, 'changeItem'); } catch (e) {}
+    }
+  }
+  if (intent.seq === intentSeq && targetId) {
+    post({ type: 'error', where: 'playQueue', message: 'playback did not reach target item' });
+  }
+}
+
+async function runIntent(intent) {
+  const stale = () => intent.seq !== intentSeq;
+  try {
+    if (intent.stationId) {
+      await callMK(() => music.setQueue({ station: intent.stationId }), 9000, 'setQueue');
+    } else {
+      await callMK(() => music.setQueue({ songs: intent.ids, startIndex: intent.startIndex }), 9000, 'setQueue');
+    }
+    if (stale()) return;
+    music.shuffleMode = appShuffle ? 1 : 0;
+    music.repeatMode = mkRepeat(appRepeat);
+    if (!intent.stationId && intent.startIndex > 0) {
+      try { await callMK(() => music.changeToMediaAtIndex(intent.startIndex), 5000, 'changeItem'); } catch (e) {}
+    }
+    if (stale()) return;
+    await startPlayback(intent);
+  } catch (e) {
+    if (!stale()) reportErr(intent.stationId ? 'station' : 'playQueue', e);
+  }
+}
+
+function kickRunner() {
+  if (runnerActive) return;
+  runnerActive = true;
+  (async () => {
+    try {
+      while (pendingIntent) {
+        const intent = pendingIntent;
+        pendingIntent = null;
+        await runIntent(intent);
+      }
+    } finally { runnerActive = false; }
+  })();
+}
+
+function requestPlay(ids, startIndex, stationId) {
+  intentSeq++;
+  pendingIntent = { seq: intentSeq, ids: ids || null, startIndex: startIndex | 0, stationId: stationId || null };
+  kickRunner();
+}
+
+// stall watchdog: supposed to be playing but the stream sits in a
+// loading/waiting/stalled state with no time progress — nudge play() again.
+setInterval(() => {
+  if (!music) return;
+  const t = music.currentPlaybackTime || 0;
+  if (music.isPlaying && Math.abs(t - lastTime) > 0.01) {
+    lastTime = t; lastAdvanceAt = Date.now(); stallRescues = 0; return;
+  }
+  const st = music.playbackState;
+  if (wantPlaying && !music.isPlaying && (st === 1 || st === 7 || st === 8) &&
+      Date.now() - lastAdvanceAt > 7000 && stallRescues < 2) {
+    stallRescues++;
+    lastAdvanceAt = Date.now();
+    callMK(() => music.play(), 6000, 'play').catch(() => {});
+  }
+}, 1000);
 
 function itemJSON() {
   const it = music && music.nowPlayingItem;
@@ -60,7 +174,7 @@ async function initMK() {
     music = MusicKit.getInstance();
     window.__aoiHasMusic = true;
     music.addEventListener('playbackStateDidChange', sendState);
-    music.addEventListener('nowPlayingItemDidChange', () => { post({ type: 'item', item: itemJSON() }); sendState(); });
+    music.addEventListener('nowPlayingItemDidChange', () => { lastAdvanceAt = Date.now(); stallRescues = 0; post({ type: 'item', item: itemJSON() }); sendState(); });
     await swReady;
     post({ type: 'ready' });
     sendAuth();
@@ -92,37 +206,21 @@ window.AoiEngine = {
   playQueue(ids, startIndex, shuffle, repeat) {
     if (!music || !ids || !ids.length) return;
     appShuffle = !!shuffle; appRepeat = repeat | 0;
-    return op(async () => {
-      await music.setQueue({ songs: ids, startIndex: startIndex | 0 });
-      music.shuffleMode = appShuffle ? 1 : 0;
-      music.repeatMode = mkRepeat(appRepeat);
-      if ((startIndex | 0) > 0) { try { await music.changeToMediaAtIndex(startIndex | 0); } catch (e) {} }
-      // Do NOT await play(): its promise resolves only once playback actually
-      // starts, and holding the serialized op chain on it delays every queued
-      // next/prev tap behind the stream fetch. Fire it, report real failures
-      // asynchronously, and let the op chain move on. MusicKit preloads the
-      // next queue item itself, which keeps auto-advance tight.
-      const p = music.play();
-      if (p && p.catch) p.catch(e => { const m = String((e && e.message) || e); if ((e && e.name === 'AbortError') || /abort/i.test(m)) return; post({ type: 'error', where: 'playQueue', message: m }); });
-    }).catch(e => { const m = String((e && e.message) || e); if ((e && e.name === 'AbortError') || /abort/i.test(m)) return; post({ type: 'error', where: 'playQueue', message: m }); });
-  },
-  play() { if (music) return op(() => music.play()).catch(() => {}); },
-  pause() { if (music) return op(() => music.pause()).catch(() => {}); },
-  next() { if (music) return op(() => music.skipToNextItem()).catch(() => {}); },
-  prev() { if (music) return op(() => music.skipToPreviousItem()).catch(() => {}); },
-  jumpTo(i) {
-    if (!music) return;
-    return op(async () => {
-      try { await music.changeToMediaAtIndex(i | 0); return; } catch (e) {}
-    }).catch(() => {});
+    requestPlay(ids, startIndex | 0, null);
   },
   playStation(id) {
+    if (!music || !id) return;
+    requestPlay(null, 0, id);
+  },
+  play() { wantPlaying = true; if (music) callMK(() => music.play(), 6000, 'play').catch(e => reportErr('play', e)); },
+  pause() { wantPlaying = false; if (music) { try { const p = music.pause(); if (p && p.catch) p.catch(() => {}); } catch (e) {} } },
+  next() { if (music) callMK(() => music.skipToNextItem(), 5000, 'next').catch(() => {}); },
+  prev() { if (music) callMK(() => music.skipToPreviousItem(), 5000, 'prev').catch(() => {}); },
+  jumpTo(i) {
     if (!music) return;
-    return op(async () => {
-      await music.setQueue({ station: id });
-      const p = music.play();
-      if (p && p.catch) p.catch(e => { const m = String((e && e.message) || e); if ((e && e.name === 'AbortError') || /abort/i.test(m)) return; post({ type: 'error', where: 'station', message: m }); });
-    }).catch(e => { const m = String((e && e.message) || e); if ((e && e.name === 'AbortError') || /abort/i.test(m)) return; post({ type: 'error', where: 'station', message: m }); });
+    callMK(() => music.changeToMediaAtIndex(i | 0), 5000, 'changeItem')
+      .then(() => { if (wantPlaying && !music.isPlaying) return callMK(() => music.play(), 6000, 'play'); })
+      .catch(() => {});
   },
   seek(sec) { if (music) { try { music.seekToTime(Number(sec) || 0); } catch (e) {} } },
   setShuffle(b) { appShuffle = !!b; if (music) music.shuffleMode = appShuffle ? 1 : 0; },

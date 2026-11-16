@@ -25,6 +25,7 @@ final class Player: ObservableObject {
     @Published var searchHistory: [SearchEntity] = []
     @Published var favSet: Set<String> = []
     @Published var favSongs: [Song] = []
+    @Published var favAlbums: [CollectionItem] = []
     @Published var toast: String?
 
     let engine: EngineBridge
@@ -33,6 +34,29 @@ final class Player: ObservableObject {
     private var timeObserver: Any?
     private var favChecked: Set<String> = []
     private var toastWork: DispatchWorkItem?
+    // Last play request sent to the engine, watched until the engine confirms
+    // it (matching item event or playing state). One silent re-issue if the
+    // confirmation never comes — a second safety net under the engine's own
+    // intent runner, for calls lost before they ever reached the page.
+    private var pendingPlay: (ids: [String], start: Int, station: String?, issuedAt: Date, retried: Bool)?
+    private var watchdogTimer: Timer?
+
+    private func startWatchdog() {
+        watchdogTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            guard let self = self, let p = self.pendingPlay else { return }
+            let age = Date().timeIntervalSince(p.issuedAt)
+            if age > 20 {
+                self.pendingPlay = nil
+            } else if age > 6, !p.retried {
+                self.pendingPlay = (p.ids, p.start, p.station, Date(), true)
+                if let st = p.station {
+                    self.engine.callStation(st)
+                } else {
+                    self.engine.playQueue(ids: p.ids, start: p.start, shuffle: self.shuffle, repeatMode: self.repeatMode)
+                }
+            }
+        }
+    }
 
     init(engine: EngineBridge, api: APIClient) {
         self.engine = engine
@@ -43,7 +67,9 @@ final class Player: ObservableObject {
         // immediately, not re-derived from the network on every cold start.
         favSongs = Self.loadJSON("aoi-fav-songs", [Song].self) ?? []
         favSet = Set(favSongs.map { "s:" + $0.playbackId })
+        favAlbums = Self.loadJSON("aoi-fav-albums", [CollectionItem].self) ?? []
         setupEngine()
+        startWatchdog()
         setupPreview()
         setupRemote()
     }
@@ -71,6 +97,7 @@ final class Player: ObservableObject {
         engine.onState = { [weak self] playing in
             guard let self = self, self.useEngine else { return }
             self.isPlaying = playing
+            if playing { self.pendingPlay = nil }
             self.updateNowPlayingInfo()
         }
         engine.onProgress = { [weak self] t, d, playing in
@@ -81,6 +108,9 @@ final class Player: ObservableObject {
         }
         engine.onItem = { [weak self] item in
             guard let self = self, self.useEngine, let item = item else { return }
+            if let p = self.pendingPlay, p.station == nil, p.ids.indices.contains(p.start), p.ids[p.start] == item.id {
+                self.pendingPlay = nil
+            }
             if let idx = self.queue.firstIndex(where: { $0.playbackId == item.id || $0.id == item.id }) {
                 if idx != self.index { self.index = idx }
                 self.current = self.queue[idx]
@@ -160,7 +190,9 @@ final class Player: ObservableObject {
         if engine.authorized {
             useEngine = true
             av.pause()
-            engine.playQueue(ids: songs.map { $0.playbackId }, start: start, shuffle: shuffle, repeatMode: repeatMode)
+            let ids = songs.map { $0.playbackId }
+            pendingPlay = (ids, start, nil, Date(), false)
+            engine.playQueue(ids: ids, start: start, shuffle: shuffle, repeatMode: repeatMode)
             isPlaying = true
         } else {
             useEngine = false
@@ -263,6 +295,7 @@ final class Player: ObservableObject {
         // so stations are handled by a dedicated JS call:
         useEngine = true
         av.pause()
+        pendingPlay = ([], 0, st.id, Date(), false)
         engine.callStation(st.id)
         isPlaying = true
     }
@@ -354,6 +387,61 @@ final class Player: ObservableObject {
                 showToast(Strings.get("fav_fail", lang))
             }
         }
+    }
+
+    // MARK: - favorite albums (local-first, like songs)
+    // The album a user favorites in this app is persisted locally the moment
+    // they tap, so the Favorites tab can always show it — Apple's ratings
+    // reads only ever supplement the local list, never gate it. (Previously a
+    // favorited CATALOG album could never appear at all: the favorites scan
+    // only walked albums already in the library.)
+    private func persistFavAlbums() { Self.saveJSON("aoi-fav-albums", favAlbums) }
+    func isFavAlbum(_ id: String) -> Bool { favAlbums.contains { $0.id == id } }
+    private func applyFavAlbum(_ item: CollectionItem, loved: Bool) {
+        if loved {
+            if !isFavAlbum(item.id) { favAlbums.insert(item, at: 0) }
+        } else {
+            favAlbums.removeAll { $0.id == item.id }
+        }
+        persistFavAlbums()
+    }
+    func toggleFavAlbum(_ item: CollectionItem, lang: String) {
+        guard engine.authorized else { showToast(Strings.get("need_acct_fav", lang)); return }
+        let was = isFavAlbum(item.id)
+        applyFavAlbum(item, loved: !was)
+        Task {
+            var ok = false
+            if was {
+                if (try? await api.rateDelete(kind: "albums", id: item.id)) != nil { ok = true }
+            } else {
+                if (try? await api.rateWrite(kind: "albums", id: item.id)) != nil { ok = true }
+            }
+            if ok {
+                showToast(Strings.get(was ? "unfaved" : "faved", lang))
+            } else {
+                applyFavAlbum(item, loved: was)
+                showToast(Strings.get("fav_fail", lang))
+            }
+        }
+    }
+    // Merge remotely-fetched favorites into the local lists (add-only: a
+    // remote miss must never erase a love made on this device).
+    func absorbFavSongs(_ remote: [Song]) {
+        var changed = false
+        for s in remote where !favSet.contains(favKey(s)) {
+            favSet.insert(favKey(s))
+            favSongs.append(s)
+            changed = true
+        }
+        if changed { persistFavs() }
+    }
+    func absorbFavAlbums(_ remote: [CollectionItem]) {
+        var changed = false
+        for a in remote where !isFavAlbum(a.id) {
+            favAlbums.append(a)
+            changed = true
+        }
+        if changed { persistFavAlbums() }
     }
 
     // MARK: - lock screen / remote

@@ -234,7 +234,7 @@ final class APIClient: ObservableObject {
         // (catalog "songs" ids and "library-songs" ids are rated separately).
         var libSongs: [Song] = []
         var offset = 0
-        while offset < 500 {
+        while offset < 200 {
             let page: ListResponse<Song>? = try? await get("/v1/me/library/songs?limit=100&offset=\(offset)")
             let items = page?.data ?? []
             libSongs += items
@@ -287,15 +287,39 @@ final class APIClient: ObservableObject {
             return (lib.id, CollectionItem(id: lib.id, type: "library-albums", attributes: lib.attributes))
         }
     }
-    // Albums she actually favorited (rated), in either rating space. Falls back to
-    // all library albums when no album ratings are found.
+    // Albums she actually favorited (rated), in either rating space.
+    // Channel 1 is the ratings list itself, resolved straight through the
+    // catalog — a favorited album does NOT have to be in her library to show
+    // up (the old library-only scan structurally hid those). Channel 2 checks
+    // the library pairs in both rating spaces. No "all library albums"
+    // fallback: unfavorited albums are not favorites.
     func favoriteAlbums() async -> [CollectionItem] {
+        var ordered: [CollectionItem] = []
+        var seen = Set<String>()
+        func add(_ a: CollectionItem) {
+            guard seen.insert(a.id).inserted else { return }
+            ordered.append(a)
+        }
+        struct Rating: Codable { var id: String }
+        let list: ListResponse<Rating>? = try? await get("/v1/me/ratings/albums?limit=100")
+        let listIds = (list?.data ?? []).map { $0.id }
+        if !listIds.isEmpty {
+            var byId: [String: CollectionItem] = [:]
+            for sf in [storefront, "cn", "us"] {
+                let missing = listIds.filter { byId[$0] == nil }
+                if missing.isEmpty { break }
+                let cat: ListResponse<CollectionItem>? = try? await get("/v1/catalog/\(sf)/albums?ids=\(missing.joined(separator: ","))")
+                for a in cat?.data ?? [] { byId[a.id] = a }
+            }
+            for id in listIds { if let a = byId[id] { add(a) } }
+        }
         let pairs = (try? await libraryAlbumPairs()) ?? []
-        if pairs.isEmpty { return [] }
-        let lovedCat = await ratingsBatch(kind: "albums", ids: pairs.map { $0.item.id })
-        let lovedLib = await ratingsBatch(kind: "library-albums", ids: pairs.map { $0.libId })
-        let rated = pairs.filter { lovedCat.contains($0.item.id) || lovedLib.contains($0.libId) }.map { $0.item }
-        return rated.isEmpty ? pairs.map { $0.item } : rated
+        if !pairs.isEmpty {
+            let lovedCat = await ratingsBatch(kind: "albums", ids: pairs.map { $0.item.id })
+            let lovedLib = await ratingsBatch(kind: "library-albums", ids: pairs.map { $0.libId })
+            for p in pairs where lovedCat.contains(p.item.id) || lovedLib.contains(p.libId) { add(p.item) }
+        }
+        return ordered
     }
     func libraryArtists() async throws -> [CollectionItem] {
         struct LibArtist: Codable {

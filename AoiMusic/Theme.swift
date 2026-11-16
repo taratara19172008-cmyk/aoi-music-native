@@ -137,3 +137,92 @@ extension View {
         modifier(GlassModifier(corner: corner, interactive: interactive))
     }
 }
+
+// MARK: - Cover colour palette (dominant-colour gradients, v105)
+// Pages no longer fade a cover into blank pastel: the whole background is a
+// gradient grown out of the cover's own dominant colours, and text flips
+// light/dark with the cover's luminance.
+struct CoverPalette {
+    var top: Color
+    var bottom: Color
+    var glow: Color
+    var isDark: Bool
+    static let fallback = CoverPalette(
+        top: Color(red: 0.93, green: 0.96, blue: 0.99),
+        bottom: Color(red: 0.98, green: 0.92, blue: 0.95),
+        glow: Color(red: 0.45, green: 0.75, blue: 0.95),
+        isDark: false)
+}
+
+enum CoverPaletteLoader {
+    private static var cache: [String: CoverPalette] = [:]
+
+    static func load(_ urlString: String?) async -> CoverPalette? {
+        guard let s = urlString, let url = URL(string: s) else { return nil }
+        if let hit = cache[s] { return hit }
+        guard let (data, _) = try? await URLSession.shared.data(from: url),
+              let img = UIImage(data: data) else { return nil }
+        let p = palette(from: img)
+        cache[s] = p
+        return p
+    }
+
+    static func palette(from image: UIImage) -> CoverPalette {
+        let size = CGSize(width: 24, height: 24)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let small = renderer.image { ctx in image.draw(in: CGRect(origin: .zero, size: size)) }
+        guard let cg = small.cgImage, let data = cg.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data) else { return .fallback }
+        let bpp = cg.bitsPerPixel / 8
+        let bpr = cg.bytesPerRow
+        var rSum = 0.0, gSum = 0.0, bSum = 0.0, n = 0.0
+        var vR = 0.0, vG = 0.0, vB = 0.0, vW = 0.0
+        for y in 0..<Int(size.height) {
+            for x in 0..<Int(size.width) {
+                let o = y * bpr + x * bpp
+                let r = Double(bytes[o]) / 255, g = Double(bytes[o + 1]) / 255, b = Double(bytes[o + 2]) / 255
+                rSum += r; gSum += g; bSum += b; n += 1
+                let mx = max(r, g, b), mn = min(r, g, b)
+                let sat = mx > 0 ? (mx - mn) / mx : 0
+                let w = sat * sat * (0.35 + mx)
+                vR += r * w; vG += g * w; vB += b * w; vW += w
+            }
+        }
+        let avg = (rSum / n, gSum / n, bSum / n)
+        let vib = vW > 0.01 ? (vR / vW, vG / vW, vB / vW) : avg
+        func mix(_ a: (Double, Double, Double), _ b: (Double, Double, Double), _ t: Double) -> (Double, Double, Double) {
+            (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t)
+        }
+        func shade(_ c: (Double, Double, Double), _ f: Double) -> (Double, Double, Double) {
+            (min(max(c.0 * f, 0), 1), min(max(c.1 * f, 0), 1), min(max(c.2 * f, 0), 1))
+        }
+        func col(_ c: (Double, Double, Double)) -> Color { Color(red: c.0, green: c.1, blue: c.2) }
+        let white = (1.0, 1.0, 1.0)
+        let topC = mix(mix(vib, avg, 0.45), white, 0.22)
+        let botC = shade(mix(vib, avg, 0.55), 0.62)
+        let lum = 0.2126 * avg.0 + 0.7152 * avg.1 + 0.0722 * avg.2
+        return CoverPalette(top: col(topC), bottom: col(botC), glow: col(vib), isDark: lum < 0.42)
+    }
+}
+
+// MARK: - Glass section (v105): every section on every page sits on its own
+// native liquid-glass panel; the title lives at the top of the panel.
+struct GlassSection<Content: View>: View {
+    var title: String? = nil
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let title = title {
+                Text(title)
+                    .font(.title3.weight(.bold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 2)
+            }
+            content()
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .aoiGlass(corner: 26)
+        .padding(.vertical, 7)
+    }
+}
