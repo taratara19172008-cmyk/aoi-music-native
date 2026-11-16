@@ -41,7 +41,7 @@ struct SongRow: View {
     var onTap: () -> Void
     var onAdd: (() -> Void)? = nil
     var showFav: Bool = true
-    var showDownload: Bool = false
+    var showShare: Bool = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -68,8 +68,8 @@ struct SongRow: View {
                     .font(.caption)
                     .foregroundStyle(settings.accent)
             }
-            if showDownload {
-                DownloadButton(song: song)
+            if showShare {
+                ShareButton(song: song)
             }
             if showFav {
                 Button {
@@ -100,34 +100,39 @@ struct SongRow: View {
     }
 }
 
-struct DownloadButton: View {
-    @EnvironmentObject var downloads: DownloadManager
-    @EnvironmentObject var player: Player
-    @EnvironmentObject var settings: AppSettings
+struct ShareItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+struct ShareSheet: UIViewControllerRepresentable {
+    var items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+struct ShareButton: View {
+    @EnvironmentObject var engine: EngineBridge
     var song: Song
 
+    private var shareURL: URL? {
+        if let u = song.attributes?.url, let url = URL(string: u) { return url }
+        let sf = engine.storefront.isEmpty ? "cn" : engine.storefront
+        return URL(string: "https://music.apple.com/\(sf)/song/\(song.playbackId)")
+    }
+
     var body: some View {
-        let pid = song.playbackId
-        Button {
-            if downloads.isDownloaded(pid) {
-                player.showToast(settings.t("downloaded"))
-            } else {
-                downloads.download(song)
-                player.showToast(settings.t("downloading"))
+        if let url = shareURL {
+            ShareLink(item: url) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30, height: 30)
             }
-        } label: {
-            Group {
-                if downloads.active.contains(pid) {
-                    ProgressView()
-                } else {
-                    Image(systemName: downloads.isDownloaded(pid) ? "checkmark.circle.fill" : "arrow.down.circle")
-                        .font(.body)
-                        .foregroundStyle(downloads.isDownloaded(pid) ? settings.accent : .secondary)
-                }
-            }
-            .frame(width: 30, height: 30)
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
     }
 }
 
