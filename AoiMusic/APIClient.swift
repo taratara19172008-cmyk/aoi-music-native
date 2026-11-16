@@ -217,7 +217,7 @@ enum TTMLParser {
     }
     static func parseTTML(_ ttml: String) -> [LyricLine] {
         let delegate = TTMLDelegate()
-        guard let parser = XMLParser(data: Data(ttml.utf8)) else { return [] }
+        let parser = XMLParser(data: Data(ttml.utf8))
         parser.delegate = delegate
         parser.shouldProcessNamespaces = false
         _ = parser.parse()
