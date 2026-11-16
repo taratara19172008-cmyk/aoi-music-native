@@ -6,6 +6,7 @@ struct CollectionView: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var engine: EngineBridge
     @EnvironmentObject var nav: AppNav
+    @EnvironmentObject var downloads: DownloadManager
     @Environment(\.dismiss) var dismiss
     var kind: String // album | playlist | lplaylist
     var id: String
@@ -50,10 +51,14 @@ struct CollectionView: View {
                     List {
                         heroSection
                         ForEach(Array(tracks.enumerated()), id: \.element.id) { i, s in
-                            SongRow(song: s, index: i, onTap: { player.playSongs(tracks, start: i) }, onAdd: { addSong = s })
+                            SongRow(song: s, index: i, onTap: { player.playSongs(tracks, start: i) }, onAdd: { addSong = s }, showDownload: true)
                                 .listRowSeparator(.hidden)
                                 .listRowBackground(Color.clear)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button { downloads.download(s); player.showToast(settings.t("downloading")) } label: {
+                                        Label(settings.t("downloads"), systemImage: "arrow.down.circle")
+                                    }
+                                    .tint(.blue)
                                     if kind == "lplaylist" {
                                         Button(role: .destructive) { removeTrack(s) } label: {
                                             Label(settings.t("del"), systemImage: "trash")
