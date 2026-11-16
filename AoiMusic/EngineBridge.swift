@@ -49,8 +49,11 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
+        case "boot":
+            if lastError.isEmpty { lastError = "boot ok, waiting for MusicKit" }
         case "ready":
             ready = true
+            if lastError.hasPrefix("boot ok") { lastError = "" }
             if pendingAuthorize { pendingAuthorize = false; authorize() }
         case "auth":
             authorized = (body["authorized"] as? Bool) ?? false
