@@ -129,7 +129,15 @@ final class APIClient: ObservableObject {
         let r: RecResponse = try await get("/v1/me/recommendations")
         var out: [CollectionItem] = []
         for g in r.data ?? [] { out += g.relationships?.contents?.data ?? [] }
-        return out
+        // The same playlist can appear in several recommendation groups, and some
+        // entries carry neither artwork nor a name — both render as ghost cells in
+        // grids (duplicate ids break ForEach layout). Keep the first of each id
+        // and drop contentless entries.
+        var seen = Set<String>()
+        return out.filter { item in
+            guard !item.id.isEmpty, seen.insert(item.id).inserted else { return false }
+            return !item.title.isEmpty || item.attributes?.artwork?.url != nil
+        }
     }
 
     // MARK: - Library
