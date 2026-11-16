@@ -140,7 +140,7 @@ struct SettingsView: View {
 
     private var engineDiag: String {
         var s = "Engine ready: \(engine.ready ? "yes" : "no") · Page loaded: \(engine.pageLoaded ? "yes" : "no")"
-        if !engine.lastError.isEmpty { s += " · Error: \(engine.lastError)" }
+        if !engine.lastError.isEmpty { s += "\n" + engine.lastError }
         return s
     }
 
