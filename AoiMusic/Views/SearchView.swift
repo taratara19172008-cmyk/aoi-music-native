@@ -105,6 +105,7 @@ struct SearchView: View {
                 Spacer(minLength: 90)
             }
             .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollIndicators(.hidden)
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
