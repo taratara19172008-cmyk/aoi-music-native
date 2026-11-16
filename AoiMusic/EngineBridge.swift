@@ -12,7 +12,7 @@ struct EngineItem: Decodable {
 }
 
 final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
-    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html?v=6")!
+    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html")!
     let webView: WKWebView
     @Published var ready = false
     @Published var authorized = false
@@ -52,7 +52,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         ucc.add(self, name: "aoi")
         webView.uiDelegate = self
         webView.navigationDelegate = self
-        webView.load(URLRequest(url: Self.engineURL))
+        webView.load(URLRequest(url: Self.engineURL, cachePolicy: .reloadIgnoringLocalCacheData))
         probeTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in self?.probe() }
     }
 
@@ -126,7 +126,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
             return
         }
         DispatchQueue.main.async { [weak self] in
-            self?.webView.evaluateJavaScript("window.AoiEngine && AoiEngine.authorize()", completionHandler: { _, err in
+            self?.webView.evaluateJavaScript("void (window.AoiEngine && AoiEngine.authorize())", completionHandler: { _, err in
                 if let err = err {
                     DispatchQueue.main.async { self?.logEvent("call failed: " + err.localizedDescription) }
                 }
