@@ -41,7 +41,7 @@ final class AppSettings: ObservableObject {
     static var bgURL: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("aoi-bg.jpg") }
 
     init() {
-        accentHex = UserDefaults.standard.string(forKey: "aoi-accent") ?? "#fa2d48"
+        accentHex = UserDefaults.standard.string(forKey: "aoi-accent") ?? "#40c8e0"
         lang = UserDefaults.standard.string(forKey: "aoi-lang") ?? "zh"
         if let data = try? Data(contentsOf: Self.bgURL), let img = UIImage(data: data) { bgImage = img }
     }
