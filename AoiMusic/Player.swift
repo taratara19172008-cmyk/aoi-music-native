@@ -109,6 +109,33 @@ final class Player: ObservableObject {
         }
     }
 
+    // MARK: - downloaded (local file) playback
+    private var localURLs: [String: URL] = [:]
+
+    func playDownloaded(_ items: [DownloadedSong], start: Int, manager: DownloadManager) {
+        guard items.indices.contains(start) else { return }
+        if useEngine { engine.pause() }
+        localURLs = Dictionary(uniqueKeysWithValues: items.map { ($0.id, manager.localURL($0)) })
+        queue = items.map { manager.songStub($0) }
+        index = start
+        current = queue[start]
+        recordHistory(queue[start])
+        useEngine = false
+        startLocal()
+        updateNowPlayingInfo()
+    }
+
+    private func startLocal() {
+        guard let cur = current else { return }
+        if let u = localURLs[cur.id] {
+            av.replaceCurrentItem(with: AVPlayerItem(url: u))
+            av.play()
+            isPlaying = true
+        } else {
+            startPreview()
+        }
+    }
+
     // MARK: - transport
     func playSongs(_ songs: [Song], start: Int) {
         guard !songs.isEmpty, songs.indices.contains(start) else { return }
@@ -170,7 +197,7 @@ final class Player: ObservableObject {
         }
         current = queue[index]
         recordHistory(queue[index])
-        startPreview()
+        startLocal()
         updateNowPlayingInfo()
     }
 
@@ -181,7 +208,7 @@ final class Player: ObservableObject {
             index -= 1
             current = queue[index]
             recordHistory(queue[index])
-            startPreview()
+            startLocal()
             updateNowPlayingInfo()
         }
     }
@@ -197,7 +224,7 @@ final class Player: ObservableObject {
             index = i
             current = queue[i]
             recordHistory(queue[i])
-            startPreview()
+            startLocal()
         }
         updateNowPlayingInfo()
     }
