@@ -83,9 +83,9 @@ enum Strings {
         "ai": "AI", "ai_title": "AI 推荐", "play": "播放", "open": "打开", "fav_add": "收藏", "fav_remove": "取消收藏", "remove_from_pl": "从歌单移除", "unplayable": "这首歌暂时放不了",
         "ai_hint": "跟我说你想听什么：心情、场景、年代、风格都行。挑好的歌会直接摆在这里，点一下就能放。",
         "ai_ph": "想听点什么？", "ai_thinking": "正在为你挑歌…", "ai_save_pl": "存为歌单", "ai_rec": "AI 推荐", "ai_more": "换一批",
-        "ai_key": "DeepSeek API Key", "ai_key_ph": "粘贴你的 DeepSeek key", "ai_key_saved": "Key 已保存",
-        "ai_key_note": "只保存在这台手机上，用来调用 DeepSeek 生成推荐。不填的话 AI 功能不可用，其他功能不受影响。",
-        "more_by": "更多%@的作品", "latest_from": "%@的最新发行", "fans_also": "%@的粉丝也喜欢", "ai_need_key": "先在设置里填入 DeepSeek API Key，AI 推荐才能工作", "ai_fail": "AI 刚才没回应，再试一次", "ai_no_match": "这次没在曲库里找到合适的歌，换个说法试试", "ai_no_new": "没有更多新歌了",
+        "ai_provider": "AI 服务商", "ai_custom": "自定义", "ai_endpoint_ph": "接口地址，如 https://example.com/v1/chat/completions", "ai_model_ph": "模型名，如 gpt-4o-mini", "ai_key": "API Key", "ai_key_ph": "粘贴所选服务商的 key", "ai_key_saved": "Key 已保存",
+        "ai_key_note": "每个服务商的 key 分开保存，只存这台手机，应用直连所选服务商生成推荐。不填的话 AI 功能不可用，其他功能不受影响。",
+        "more_by": "更多%@的作品", "latest_from": "%@的最新发行", "fans_also": "%@的粉丝也喜欢", "ai_need_key": "先在设置里选好服务商并填入它的 API Key，AI 推荐才能工作", "ai_fail": "AI 刚才没回应，再试一次", "ai_no_match": "这次没在曲库里找到合适的歌，换个说法试试", "ai_no_new": "没有更多新歌了",
     ]
     static let en: [String: String] = [
         "home": "Home", "search": "Search", "radio": "Radio", "library": "Library", "settings": "Settings",
@@ -120,9 +120,9 @@ enum Strings {
         "ai": "AI", "ai_title": "AI Picks", "play": "Play", "open": "Open", "fav_add": "Favorite", "fav_remove": "Unfavorite", "remove_from_pl": "Remove from Playlist", "unplayable": "This song can't be played right now",
         "ai_hint": "Tell me what you feel like hearing — a mood, a scene, an era, a style. The songs I pick appear right here, ready to play.",
         "ai_ph": "What do you want to hear?", "ai_thinking": "Picking songs for you…", "ai_save_pl": "Save as Playlist", "ai_rec": "AI Picks", "ai_more": "Show Another Batch",
-        "ai_key": "DeepSeek API Key", "ai_key_ph": "Paste your DeepSeek key", "ai_key_saved": "Key saved",
-        "ai_key_note": "Stored only on this phone and used to call DeepSeek for recommendations. Without it the AI features stay off; everything else works as before.",
-        "more_by": "More by %@", "latest_from": "Latest from %@", "fans_also": "Fans of %@ also like", "ai_need_key": "Add your DeepSeek API Key in Settings to use AI picks", "ai_fail": "The AI didn't answer just now — try again", "ai_no_match": "No matching songs in the catalog this time — try describing it differently", "ai_no_new": "No more new songs to show",
+        "ai_provider": "AI provider", "ai_custom": "Custom", "ai_endpoint_ph": "Endpoint URL, e.g. https://example.com/v1/chat/completions", "ai_model_ph": "Model name, e.g. gpt-4o-mini", "ai_key": "API Key", "ai_key_ph": "Paste the selected provider's key", "ai_key_saved": "Key saved",
+        "ai_key_note": "Each provider's key is stored separately, only on this phone; the app calls the selected provider directly for recommendations. Without a key the AI features stay off; everything else works as before.",
+        "more_by": "More by %@", "latest_from": "Latest from %@", "fans_also": "Fans of %@ also like", "ai_need_key": "Pick a provider and add its API key in Settings to use AI picks", "ai_fail": "The AI didn't answer just now — try again", "ai_no_match": "No matching songs in the catalog this time — try describing it differently", "ai_no_new": "No more new songs to show",
     ]
     static func get(_ key: String, _ lang: String) -> String {
         if lang == "en" { return en[key] ?? zh[key] ?? key }

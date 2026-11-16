@@ -1,17 +1,76 @@
 import Foundation
 import Security
 
-// The DeepSeek key lives only in this phone's Keychain (v106): she pastes
-// it once in Settings; it never transits chat or any server of ours, and
-// the app calls DeepSeek directly with it.
+// AI providers (v107): all of these speak the same OpenAI-compatible
+// chat-completions format, so switching providers is just endpoint +
+// model + that provider's own key. She picks one in Settings; keys are
+// stored per provider in the Keychain (DeepSeek keeps its original
+// service name, so a key entered back in v106 keeps working untouched),
+// and the app calls the selected provider directly — keys never transit
+// chat or any server of ours.
+struct AIProvider: Identifiable {
+    var id: String
+    var name: String
+    var endpoint: String
+    var model: String
+
+    static let all: [AIProvider] = [
+        AIProvider(id: "deepseek", name: "DeepSeek", endpoint: "https://api.deepseek.com/chat/completions", model: "deepseek-chat"),
+        AIProvider(id: "qwen", name: "通义千问", endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", model: "qwen-plus"),
+        AIProvider(id: "glm", name: "智谱 GLM", endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions", model: "glm-4-plus"),
+        AIProvider(id: "kimi", name: "Kimi", endpoint: "https://api.moonshot.cn/v1/chat/completions", model: "moonshot-v1-8k"),
+        AIProvider(id: "openai", name: "OpenAI", endpoint: "https://api.openai.com/v1/chat/completions", model: "gpt-4o-mini"),
+        AIProvider(id: "custom", name: "Custom", endpoint: "", model: ""),
+    ]
+
+    static var currentId: String {
+        UserDefaults.standard.string(forKey: "ai_provider_id") ?? "deepseek"
+    }
+
+    static func select(_ id: String) {
+        UserDefaults.standard.set(id, forKey: "ai_provider_id")
+    }
+
+    static var customEndpoint: String {
+        UserDefaults.standard.string(forKey: "ai_custom_endpoint") ?? ""
+    }
+
+    static var customModel: String {
+        UserDefaults.standard.string(forKey: "ai_custom_model") ?? ""
+    }
+
+    static func setCustom(endpoint: String, model: String) {
+        UserDefaults.standard.set(endpoint, forKey: "ai_custom_endpoint")
+        UserDefaults.standard.set(model, forKey: "ai_custom_model")
+    }
+
+    static func current() -> AIProvider {
+        guard var p = all.first(where: { $0.id == currentId }) else { return all[0] }
+        if p.id == "custom" {
+            p.endpoint = customEndpoint
+            p.model = customModel
+        }
+        return p
+    }
+
+    var isReady: Bool { !endpoint.isEmpty && !model.isEmpty }
+}
+
 enum AIKeyStore {
-    private static let service = "com.aoimusic.deepseek"
     private static let account = "api-key"
 
-    static func get() -> String {
+    private static func service(for id: String) -> String {
+        id == "deepseek" ? "com.aoimusic.deepseek" : "com.aoimusic.ai.\(id)"
+    }
+
+    static func get() -> String { get(forProvider: AIProvider.currentId) }
+
+    static func set(_ value: String) { set(value, forProvider: AIProvider.currentId) }
+
+    static func get(forProvider id: String) -> String {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: service(for: id),
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
@@ -22,10 +81,10 @@ enum AIKeyStore {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    static func set(_ value: String) {
+    static func set(_ value: String, forProvider id: String) {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: service(for: id),
             kSecAttrAccount as String: account,
         ]
         SecItemDelete(base as CFDictionary)
@@ -118,13 +177,15 @@ final class AIClient {
     }
 
     private func complete(messages: [[String: String]], key: String) async throws -> String {
-        var req = URLRequest(url: URL(string: "https://api.deepseek.com/chat/completions")!)
+        let provider = AIProvider.current()
+        guard provider.isReady, let url = URL(string: provider.endpoint) else { throw AIError.badResponse }
+        var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 60
         let body: [String: Any] = [
-            "model": "deepseek-chat",
+            "model": provider.model,
             "messages": messages,
             "temperature": 0.8,
             "stream": false,
