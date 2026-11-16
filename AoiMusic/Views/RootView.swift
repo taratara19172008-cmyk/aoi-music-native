@@ -220,6 +220,8 @@ struct MiniPlayer: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .aoiGlass(corner: 26, interactive: true)
+        .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .onTapGesture { nav.showNowPlaying = true }
     }
     private func transportButton(_ icon: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
