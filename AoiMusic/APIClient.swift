@@ -40,13 +40,25 @@ final class APIClient: ObservableObject {
 
     // MARK: - Catalog / home
     func charts() async throws -> SearchResponse {
-        let sf = storefront
-        async let songs: ListResponse<Song> = get("/v1/catalog/\(sf)/charts?types=songs&limit=12")
-        async let albums: ListResponse<CollectionItem> = get("/v1/catalog/\(sf)/charts?types=albums&limit=10")
-        async let pls: ListResponse<CollectionItem> = get("/v1/catalog/\(sf)/charts?types=playlists&limit=10")
-        var r = SearchResponse()
-        r.results = SearchResponse.Results(songs: try? await songs, albums: try? await albums, artists: nil, playlists: try? await pls)
-        return r
+        // The charts endpoint does NOT return a top-level data array: the payload is
+        // { results: { songs: [ { chart, data: [...] } ], albums: [...], playlists: [...] } }.
+        // Decoding it as ListResponse silently yielded nil for every section, which is
+        // why Home's Top Songs / Top Albums / playlists were always empty.
+        struct ChartEntry<T: Codable>: Codable { var data: [T]? }
+        struct ChartResults: Codable {
+            var songs: [ChartEntry<Song>]?
+            var albums: [ChartEntry<CollectionItem>]?
+            var playlists: [ChartEntry<CollectionItem>]?
+        }
+        struct ChartsResponse: Codable { var results: ChartResults? }
+        let r: ChartsResponse = try await get("/v1/catalog/\(storefront)/charts?types=songs,albums,playlists&limit=12")
+        var out = SearchResponse()
+        out.results = SearchResponse.Results(
+            songs: ListResponse(data: r.results?.songs?.first?.data),
+            albums: ListResponse(data: r.results?.albums?.first?.data),
+            artists: nil,
+            playlists: ListResponse(data: r.results?.playlists?.first?.data))
+        return out
     }
 
     func songFull(id: String) async -> Song? {
@@ -151,7 +163,7 @@ final class APIClient: ObservableObject {
         var groups: [(title: String, items: [CollectionItem])] = []
         for g in r?.data ?? [] {
             let items = (g.relationships?.contents?.data ?? []).filter { item in
-                guard !item.id.isEmpty, seen.insert(item.id).inserted else { return false }
+                guard !item.id.isEmpty, item.type != "songs", seen.insert(item.id).inserted else { return false }
                 return !item.title.isEmpty || item.attributes?.artwork?.url != nil
             }
             if !items.isEmpty {
@@ -161,23 +173,80 @@ final class APIClient: ObservableObject {
         return groups
     }
 
+    func recommendationSongs() async -> [Song] {
+        struct G: Codable { var relationships: GRels? }
+        struct GRels: Codable { var contents: ListResponse<Song>? }
+        struct Resp: Codable { var data: [G]? }
+        let r: Resp? = try? await get("/v1/me/recommendations")
+        var seen = Set<String>()
+        var out: [Song] = []
+        for g in r?.data ?? [] {
+            for s in g.relationships?.contents?.data ?? [] where s.type == "songs" {
+                guard seen.insert(s.id).inserted, s.attributes?.name != nil else { continue }
+                out.append(s)
+            }
+        }
+        return Array(out.prefix(12))
+    }
+
+    // Batch-check which of the given ids carry a rating, in one request per 50 ids.
+    // Returns the ids that are rated (and not disliked). Empty on any failure.
+    func ratingsBatch(kind: String, ids: [String]) async -> Set<String> {
+        struct R: Codable { var id: String; var attributes: RAttrs? }
+        struct RAttrs: Codable { var value: Int? }
+        var loved = Set<String>()
+        var i = 0
+        while i < ids.count {
+            let chunk = Array(ids[i..<min(i + 50, ids.count)])
+            i += 50
+            let r: ListResponse<R>? = try? await get("/v1/me/ratings/\(kind)?ids=\(chunk.joined(separator: ","))")
+            for it in r?.data ?? [] where it.attributes?.value != -1 {
+                loved.insert(it.id)
+            }
+        }
+        return loved
+    }
+
     func favoriteSongs() async -> [Song] {
+        var ordered: [Song] = []
+        var seenPid = Set<String>()
+        func add(_ s: Song) {
+            guard seenPid.insert(s.playbackId).inserted else { return }
+            ordered.append(s)
+        }
+        // Channel 1: the ratings list endpoint (only some accounts/storefronts honor it).
         struct Rating: Codable { var id: String }
-        let r: ListResponse<Rating>? = try? await get("/v1/me/ratings/songs?limit=100")
-        let ids = (r?.data ?? []).map { $0.id }
-        if ids.isEmpty { return [] }
-        var byId: [String: Song] = [:]
-        let lib: ListResponse<Song>? = try? await get("/v1/me/library/songs?ids=\(ids.joined(separator: ","))")
-        for s in lib?.data ?? [] {
-            byId[s.id] = s
-            if let c = s.attributes?.playParams?.catalogId { byId[c] = s }
+        let list: ListResponse<Rating>? = try? await get("/v1/me/ratings/songs?limit=100")
+        let listIds = (list?.data ?? []).map { $0.id }
+        if !listIds.isEmpty {
+            var byId: [String: Song] = [:]
+            let lib: ListResponse<Song>? = try? await get("/v1/me/library/songs?ids=\(listIds.joined(separator: ","))")
+            for s in lib?.data ?? [] { byId[s.id] = s; byId[s.playbackId] = s }
+            for sf in [storefront, "cn", "us"] {
+                let missing = listIds.filter { byId[$0] == nil }
+                if missing.isEmpty { break }
+                let cat: ListResponse<Song>? = try? await get("/v1/catalog/\(sf)/songs?ids=\(missing.joined(separator: ","))")
+                for s in cat?.data ?? [] { byId[s.id] = s }
+            }
+            for id in listIds { if let s = byId[id] { add(s) } }
         }
-        let missing = ids.filter { byId[$0] == nil }
-        if !missing.isEmpty {
-            let cat: ListResponse<Song>? = try? await get("/v1/catalog/\(storefront)/songs?ids=\(missing.joined(separator: ","))")
-            for s in cat?.data ?? [] { byId[s.id] = s }
+        // Channel 2: scan the library and batch-check ratings in both rating spaces
+        // (catalog "songs" ids and "library-songs" ids are rated separately).
+        var libSongs: [Song] = []
+        var offset = 0
+        while offset < 500 {
+            let page: ListResponse<Song>? = try? await get("/v1/me/library/songs?limit=100&offset=\(offset)")
+            let items = page?.data ?? []
+            libSongs += items
+            if items.count < 100 { break }
+            offset += 100
         }
-        return ids.compactMap { byId[$0] }
+        if !libSongs.isEmpty {
+            let lovedCat = await ratingsBatch(kind: "songs", ids: Array(Set(libSongs.map { $0.playbackId })))
+            let lovedLib = await ratingsBatch(kind: "library-songs", ids: libSongs.map { $0.id })
+            for s in libSongs where lovedCat.contains(s.playbackId) || lovedLib.contains(s.id) { add(s) }
+        }
+        return ordered
     }
 
     func libraryPlaylists() async throws -> [CollectionItem] {
@@ -189,6 +258,12 @@ final class APIClient: ObservableObject {
         return r.data ?? []
     }
     func libraryAlbums() async throws -> [CollectionItem] {
+        let pairs = try await libraryAlbumPairs()
+        return pairs.map { $0.item }
+    }
+    // Library albums paired with their library id (ratings live in two id spaces,
+    // so the Favorites scan needs both the catalog item and the library id).
+    func libraryAlbumPairs() async throws -> [(libId: String, item: CollectionItem)] {
         struct LibAlbum: Codable {
             var id: String
             var attributes: CollectionAttrs?
@@ -207,10 +282,20 @@ final class APIClient: ObservableObject {
         }
         return libs.map { lib in
             if let cid = lib.relationships?.catalog?.data?.first?.id, let cat = catMap[cid] {
-                return cat
+                return (lib.id, cat)
             }
-            return CollectionItem(id: lib.id, type: "library-albums", attributes: lib.attributes)
+            return (lib.id, CollectionItem(id: lib.id, type: "library-albums", attributes: lib.attributes))
         }
+    }
+    // Albums she actually favorited (rated), in either rating space. Falls back to
+    // all library albums when no album ratings are found.
+    func favoriteAlbums() async -> [CollectionItem] {
+        let pairs = (try? await libraryAlbumPairs()) ?? []
+        if pairs.isEmpty { return [] }
+        let lovedCat = await ratingsBatch(kind: "albums", ids: pairs.map { $0.item.id })
+        let lovedLib = await ratingsBatch(kind: "library-albums", ids: pairs.map { $0.libId })
+        let rated = pairs.filter { lovedCat.contains($0.item.id) || lovedLib.contains($0.libId) }.map { $0.item }
+        return rated.isEmpty ? pairs.map { $0.item } : rated
     }
     func libraryArtists() async throws -> [CollectionItem] {
         struct LibArtist: Codable {
@@ -274,22 +359,84 @@ final class APIClient: ObservableObject {
     }
 
     // MARK: - Ratings / favorites
-    func rating(kind: String, id: String) async -> Bool {
+    // Tri-state: true = loved, false = definitively not loved (incl. 404 = no rating),
+    // nil = unknown (network/auth failure) — callers must NOT cache nil as "not loved".
+    func ratingState(kind: String, id: String) async -> Bool? {
         do {
             let r: RatingResponse = try await get("/v1/me/ratings/\(kind)/\(id)")
             return r.data?.attributes?.value == 1
-        } catch { return false }
+        } catch {
+            if case APIError.http(let code, _) = error, code == 404 { return false }
+            return nil
+        }
+    }
+    func rating(kind: String, id: String) async -> Bool {
+        await ratingState(kind: kind, id: id) ?? false
     }
     func rateWrite(kind: String, id: String) async throws {
+        // PUT is the documented write. Try the standard host, then the amp host;
+        // an accepted (2xx) PUT counts as success — ratings propagate asynchronously
+        // on Apple's side, so a verify-GET can lag and must not veto the write.
         let body: [String: Any] = ["type": "ratings", "attributes": ["value": 1]]
-        do { _ = try await request(path: "/v1/me/ratings/\(kind)/\(id)", method: "PUT", body: body) }
-        catch { _ = try await request(path: "/v1/me/ratings/\(kind)/\(id)", method: "POST", body: body) }
+        let path = "/v1/me/ratings/\(kind)/\(id)"
+        var lastError: Error?
+        for amp in [false, true] {
+            do {
+                _ = try await request(path: path, amp: amp, method: "PUT", body: body)
+                return
+            } catch { lastError = error }
+        }
+        throw lastError ?? APIError.badData
     }
     func rateDelete(kind: String, id: String) async throws {
         _ = try await request(path: "/v1/me/ratings/\(kind)/\(id)", method: "DELETE")
         if await rating(kind: kind, id: id) {
             _ = try await request(path: "/v1/me/ratings/\(kind)/\(id)", method: "DELETE")
         }
+    }
+
+    // MARK: - Motion artwork (animated covers) + artist videos
+    // editorialVideo lives behind ?extend=editorialVideo and is served by the amp
+    // host; the value shape varies, so walk it like the web app does: preferred
+    // variant keys first, then any video-looking URL in the object.
+    func motionURL(kind: String, id: String) async -> String? {
+        for amp in [true, false] {
+            if let data = try? await request(path: "/v1/catalog/\(storefront)/\(kind)/\(id)?extend=editorialVideo", amp: amp),
+               let u = Self.pickMotionURL(data) { return u }
+        }
+        return nil
+    }
+    func motionURLForSong(_ song: Song) async -> String? {
+        if let aid = song.relationships?.albums?.data?.first?.id {
+            return await motionURL(kind: "albums", id: aid)
+        }
+        if let full = await songFull(for: song), let aid = full.relationships?.albums?.data?.first?.id {
+            return await motionURL(kind: "albums", id: aid)
+        }
+        return nil
+    }
+    static func pickMotionURL(_ data: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr = obj["data"] as? [[String: Any]],
+              let attrs = arr.first?["attributes"] as? [String: Any],
+              let ev = attrs["editorialVideo"] as? [String: Any] else { return nil }
+        for k in ["motionDetailSquare", "motionSquareVideo1x1", "motionDetailTall", "motionTallVideo3x4"] {
+            if let v = (ev[k] as? [String: Any])?["video"] as? String, !v.isEmpty { return v }
+        }
+        return findVideoURL(ev)
+    }
+    static func findVideoURL(_ o: Any) -> String? {
+        if let s = o as? String {
+            let l = s.lowercased()
+            return (l.contains(".mp4") || l.contains(".m4v") || l.contains(".mov") || l.contains(".m3u8")) ? s : nil
+        }
+        if let d = o as? [String: Any] { for v in d.values { if let r = findVideoURL(v) { return r } } }
+        if let a = o as? [Any] { for v in a { if let r = findVideoURL(v) { return r } } }
+        return nil
+    }
+    func artistVideos(id: String) async -> [MVItem] {
+        let r: ListResponse<MVItem>? = try? await get("/v1/catalog/\(storefront)/artists/\(id)/music-videos?limit=12")
+        return (r?.data ?? []).filter { $0.attributes?.name != nil }
     }
 
     // MARK: - Lyrics (TTML, 4-channel fallback like the web app)

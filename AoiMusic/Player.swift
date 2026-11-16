@@ -24,6 +24,7 @@ final class Player: ObservableObject {
     @Published var history: [Song] = []
     @Published var searchHistory: [SearchEntity] = []
     @Published var favSet: Set<String> = []
+    @Published var favSongs: [Song] = []
     @Published var toast: String?
 
     let engine: EngineBridge
@@ -38,6 +39,10 @@ final class Player: ObservableObject {
         self.api = api
         history = Self.loadJSON("aoi-history", [Song].self) ?? []
         searchHistory = Self.loadJSON("aoi-search-entities", [SearchEntity].self) ?? []
+        // Favorites survive relaunches: hearts are restored from local storage
+        // immediately, not re-derived from the network on every cold start.
+        favSongs = Self.loadJSON("aoi-fav-songs", [Song].self) ?? []
+        favSet = Set(favSongs.map { "s:" + $0.playbackId })
         setupEngine()
         setupPreview()
         setupRemote()
@@ -51,6 +56,8 @@ final class Player: ObservableObject {
     static func saveJSON<T: Encodable>(_ key: String, _ value: T) {
         if let data = try? JSONEncoder().encode(value) { UserDefaults.standard.set(data, forKey: key) }
     }
+    var lang: String { UserDefaults.standard.string(forKey: "aoi-lang") ?? "zh" }
+
     func showToast(_ msg: String) {
         toast = msg
         toastWork?.cancel()
@@ -85,8 +92,15 @@ final class Player: ObservableObject {
             if let c = self.current { self.recordHistory(c) }
             self.updateNowPlayingInfo()
         }
-        engine.onError = { [weak self] _ in
-            self?.showToast(Strings.get("play_fail", "zh"))
+        engine.onError = { [weak self] kind in
+            // Only a failed playback attempt may surface the "playback failed" toast,
+            // and only if nothing actually started playing shortly after (the engine
+            // reports superseded-operation errors that are not real failures).
+            guard let self = self, kind == "playQueue" || kind == "station" else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+                guard let self = self, self.useEngine, !self.isPlaying else { return }
+                self.showToast(Strings.get("play_fail", self.lang))
+            }
         }
     }
 
@@ -163,7 +177,7 @@ final class Player: ObservableObject {
             isPlaying = true
             duration = 30
         } else {
-            showToast(Strings.get("no_preview", "zh"))
+            showToast(Strings.get("no_preview", lang))
         }
     }
 
@@ -274,31 +288,69 @@ final class Player: ObservableObject {
     }
 
     // MARK: - favorites
-    func favKey(_ song: Song) -> String {
-        (song.type == "library-songs" ? "library-songs" : "songs") + ":" + song.id
-    }
+    // One canonical key per song — the catalog (playback) id — so the same song
+    // keeps its heart whether it is met as a catalog row or a library row.
+    func favKey(_ song: Song) -> String { "s:" + song.playbackId }
     func isFav(_ song: Song) -> Bool { favSet.contains(favKey(song)) }
+    private func persistFavs() { Self.saveJSON("aoi-fav-songs", favSongs) }
+    private func applyFav(_ song: Song, loved: Bool) {
+        let key = favKey(song)
+        if loved {
+            favSet.insert(key)
+            if !favSongs.contains(where: { favKey($0) == key }) { favSongs.insert(song, at: 0) }
+        } else {
+            favSet.remove(key)
+            favSongs.removeAll { favKey($0) == key }
+        }
+        persistFavs()
+    }
     func hydrateFav(_ song: Song) {
         let key = favKey(song)
+        if favSet.contains(key) { return }
         guard !favChecked.contains(key) else { return }
-        favChecked.insert(key)
-        let kind = song.type == "library-songs" ? "library-songs" : "songs"
         Task {
-            if await api.rating(kind: kind, id: song.id) { favSet.insert(key) }
+            var known: Bool? = nil
+            if let v = await api.ratingState(kind: "songs", id: song.playbackId) { known = v }
+            if known != true, song.type == "library-songs" || song.id != song.playbackId {
+                if let v = await api.ratingState(kind: "library-songs", id: song.id) {
+                    known = (known ?? false) || v
+                }
+            }
+            // Unknown (network/auth hiccup): do NOT mark checked and do NOT clear
+            // anything — the next appearance retries. Only a definitive answer
+            // is cached for the session.
+            guard let loved = known else { return }
+            favChecked.insert(key)
+            if loved { applyFav(song, loved: true) }
         }
     }
     func toggleFav(_ song: Song, lang: String) {
         guard engine.authorized else { showToast(Strings.get("need_acct_fav", lang)); return }
         let key = favKey(song)
-        let kind = song.type == "library-songs" ? "library-songs" : "songs"
         let was = favSet.contains(key)
-        if was { favSet.remove(key) } else { favSet.insert(key) }
+        applyFav(song, loved: !was)
+        // Ratings live in two id spaces; write both so the love sticks no matter
+        // which form of the song Apple checks later.
+        var targets: [(String, String)] = []
+        if song.type == "library-songs" {
+            targets.append(("library-songs", song.id))
+            if song.playbackId != song.id { targets.append(("songs", song.playbackId)) }
+        } else {
+            targets.append(("songs", song.playbackId))
+        }
         Task {
-            do {
-                if was { try await api.rateDelete(kind: kind, id: song.id); showToast(Strings.get("unfaved", lang)) }
-                else { try await api.rateWrite(kind: kind, id: song.id); showToast(Strings.get("faved", lang)) }
-            } catch {
-                if was { favSet.insert(key) } else { favSet.remove(key) }
+            var ok = false
+            for (kind, tid) in targets {
+                if was {
+                    if (try? await api.rateDelete(kind: kind, id: tid)) != nil { ok = true }
+                } else {
+                    if (try? await api.rateWrite(kind: kind, id: tid)) != nil { ok = true }
+                }
+            }
+            if ok {
+                showToast(Strings.get(was ? "unfaved" : "faved", lang))
+            } else {
+                applyFav(song, loved: was)
                 showToast(Strings.get("fav_fail", lang))
             }
         }

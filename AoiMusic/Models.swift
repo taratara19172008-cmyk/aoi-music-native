@@ -111,3 +111,18 @@ struct RatingResponse: Codable {
 }
 
 struct RecentPlayedResponse: Codable { var data: [Song]? }
+
+struct MVItem: Codable, Identifiable, Hashable {
+    var id: String
+    var attributes: Attrs?
+    struct Attrs: Codable, Hashable {
+        var name: String?
+        var artistName: String?
+        var artwork: Artwork?
+        var previews: [PV]?
+        struct PV: Codable, Hashable { var url: String?; var hlsUrl: String? }
+    }
+    var title: String { attributes?.name ?? "" }
+    var previewURL: String? { attributes?.previews?.first?.hlsUrl ?? attributes?.previews?.first?.url }
+    func art(_ w: Int, _ h: Int) -> String? { attributes?.artwork?.urlString(w, h) }
+}

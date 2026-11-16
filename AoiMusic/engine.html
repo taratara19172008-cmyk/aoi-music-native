@@ -97,8 +97,14 @@ window.AoiEngine = {
       music.shuffleMode = appShuffle ? 1 : 0;
       music.repeatMode = mkRepeat(appRepeat);
       if ((startIndex | 0) > 0) { try { await music.changeToMediaAtIndex(startIndex | 0); } catch (e) {} }
-      await music.play();
-    }).catch(e => post({ type: 'error', where: 'playQueue', message: String((e && e.message) || e) }));
+      // Do NOT await play(): its promise resolves only once playback actually
+      // starts, and holding the serialized op chain on it delays every queued
+      // next/prev tap behind the stream fetch. Fire it, report real failures
+      // asynchronously, and let the op chain move on. MusicKit preloads the
+      // next queue item itself, which keeps auto-advance tight.
+      const p = music.play();
+      if (p && p.catch) p.catch(e => { const m = String((e && e.message) || e); if ((e && e.name === 'AbortError') || /abort/i.test(m)) return; post({ type: 'error', where: 'playQueue', message: m }); });
+    }).catch(e => { const m = String((e && e.message) || e); if ((e && e.name === 'AbortError') || /abort/i.test(m)) return; post({ type: 'error', where: 'playQueue', message: m }); });
   },
   play() { if (music) return op(() => music.play()).catch(() => {}); },
   pause() { if (music) return op(() => music.pause()).catch(() => {}); },
@@ -112,8 +118,11 @@ window.AoiEngine = {
   },
   playStation(id) {
     if (!music) return;
-    return op(async () => { await music.setQueue({ station: id }); await music.play(); })
-      .catch(e => post({ type: 'error', where: 'station', message: String((e && e.message) || e) }));
+    return op(async () => {
+      await music.setQueue({ station: id });
+      const p = music.play();
+      if (p && p.catch) p.catch(e => { const m = String((e && e.message) || e); if ((e && e.name === 'AbortError') || /abort/i.test(m)) return; post({ type: 'error', where: 'station', message: m }); });
+    }).catch(e => { const m = String((e && e.message) || e); if ((e && e.name === 'AbortError') || /abort/i.test(m)) return; post({ type: 'error', where: 'station', message: m }); });
   },
   seek(sec) { if (music) { try { music.seekToTime(Number(sec) || 0); } catch (e) {} } },
   setShuffle(b) { appShuffle = !!b; if (music) music.shuffleMode = appShuffle ? 1 : 0; },
