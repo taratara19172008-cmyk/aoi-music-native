@@ -41,6 +41,11 @@ struct CollectionView: View {
                 if !loaded {
                     ProgressView().padding(.top, 60)
                     Spacer()
+                } else if item == nil && tracks.isEmpty {
+                    Text(settings.t("empty"))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 60)
+                    Spacer()
                 } else {
                     List {
                         heroSection
