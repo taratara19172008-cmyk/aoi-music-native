@@ -12,7 +12,7 @@ struct EngineItem: Decodable {
 }
 
 final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
-    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html")!
+    static let engineBaseURL = URL(string: "https://music.apple.com")!
     let webView: WKWebView
     @Published var ready = false
     @Published var authorized = false
@@ -52,7 +52,10 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         ucc.add(self, name: "aoi")
         webView.uiDelegate = self
         webView.navigationDelegate = self
-        webView.load(URLRequest(url: Self.engineURL, cachePolicy: .reloadIgnoringLocalCacheData))
+        if let fileURL = Bundle.main.url(forResource: "engine", withExtension: "html"),
+           let html = try? String(contentsOf: fileURL, encoding: .utf8) {
+            webView.loadHTMLString(html, baseURL: Self.engineBaseURL)
+        }
         probeTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in self?.probe() }
     }
 
