@@ -23,6 +23,7 @@ struct AoiMusicApp: App {
     @StateObject private var engine: EngineBridge
     @StateObject private var player: Player
     @StateObject private var nav = AppNav()
+    @StateObject private var downloads = DownloadManager()
 
     init() {
         let api = APIClient()
@@ -40,6 +41,7 @@ struct AoiMusicApp: App {
                 .environmentObject(engine)
                 .environmentObject(player)
                 .environmentObject(nav)
+                .environmentObject(downloads)
                 .onReceive(engine.$userToken) { api.userToken = $0 }
                 .onReceive(engine.$storefront) { sf in
                     if !sf.isEmpty { api.storefront = sf }
