@@ -141,9 +141,9 @@ struct NowPlayingView: View {
                     HStack(spacing: 10) {
                         ArtworkImage(urlString: s.art(120, 120), size: 40, corner: 7)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(s.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                            Text(s.title).font(.subheadline.weight(.semibold)).lineLimit(2)
                                 .foregroundStyle(i == player.index ? settings.accent : .white)
-                            Text(s.artist).font(.caption).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                            Text(s.artist).font(.caption).foregroundStyle(.white.opacity(0.6)).lineLimit(2)
                         }
                         Spacer()
                         if i == player.index {
@@ -201,7 +201,7 @@ struct NowPlayingView: View {
                     Text(player.current?.title ?? "—")
                         .font(.system(size: 21, weight: .bold))
                         .foregroundStyle(.white)
-                        .lineLimit(1)
+                        .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }
@@ -210,7 +210,7 @@ struct NowPlayingView: View {
                     Text(player.current?.artist ?? "—")
                         .font(.system(size: 18))
                         .foregroundStyle(Color.white.opacity(0.65))
-                        .lineLimit(1)
+                        .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }

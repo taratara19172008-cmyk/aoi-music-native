@@ -21,8 +21,6 @@ struct RootView: View {
     @EnvironmentObject var engine: EngineBridge
     @EnvironmentObject var nav: AppNav
     @State private var page: Page = .home
-    @State private var dragTarget: Page? = nil
-    @State private var lensY: CGFloat? = nil
     private let mainPages: [Page] = [.home, .search, .radio, .library]
 
     var body: some View {
@@ -92,151 +90,17 @@ struct RootView: View {
 
     private var railH: CGFloat { min(620, UIScreen.main.bounds.height * 0.66) }
 
-    private func railCenter(_ p: Page) -> CGFloat {
-        switch p {
-        case .home: return 98
-        case .search: return 160
-        case .radio: return 222
-        case .library: return 284
-        default: return 284
-        }
-    }
-
-    private func railPage(atY y: CGFloat) -> Page {
-        [Page.home, .search, .radio, .library].min(by: { abs(railCenter($0) - y) < abs(railCenter($1) - y) }) ?? .home
-    }
-
-    // The Muse-bar droplet: a live interactive-glass lens that rides on top of the
-    // main segment, follows the finger 1:1, stretches as it is pulled between
-    // items, and springs onto the chosen item on release.
-    @ViewBuilder
-    private var railLens: some View {
-        let active = lensY != nil
-        let cy = lensY ?? railCenter(mainPages.contains(page) ? page : .home)
-        let near = railPage(atY: cy)
-        let pull = active ? min(0.30, abs(cy - railCenter(near)) / 240.0) : 0
-        let rr = RoundedRectangle(cornerRadius: 19, style: .continuous)
-        Group {
-            if #available(iOS 26.0, *) {
-                Color.clear
-                    .glassEffect(.regular.interactive(), in: rr)
-            } else {
-                rr.fill(.white.opacity(0.35))
-            }
-        }
-        .frame(width: 66, height: 56)
-        .scaleEffect(x: 1 + pull * 0.35, y: 1 + pull)
-        .offset(y: cy - 28)
-        .opacity(active || mainPages.contains(page) ? 1 : 0)
-        .animation(active ? nil : .spring(response: 0.38, dampingFraction: 0.62), value: cy)
-    }
-
-    private func railItem(_ p: Page) -> some View {
-        let sel = (dragTarget ?? page) == p
-        return VStack(spacing: 3) {
-            Image(systemName: p.icon)
-                .font(.system(size: 21, weight: .semibold))
-            Text(settings.t(p.key))
-                .font(.system(size: 10, weight: .medium))
-        }
-        .foregroundStyle(sel ? settings.accent : Color.primary.opacity(0.75))
-        .frame(width: 62, height: 56)
-    }
-
-    private var rail: some View {
-        Group {
-            if #available(iOS 26.0, *) {
-                GlassEffectContainer(spacing: 26) { railBody }
-            } else {
-                railBody
-            }
-        }
-    }
+    private var rail: some View { railBody }
 
     private var railBody: some View {
         VStack(spacing: 0) {
-            railSegmentMain
+            RailSegment(pages: mainPages, firstCenter: 98, topPad: 0, bottomPad: 6, selection: $page, showsLogo: true)
             Spacer(minLength: 24)
-            railSegmentBottom
+            RailSegment(pages: [.favorites, .settings], firstCenter: 38, topPad: 10, bottomPad: 10, selection: $page)
         }
         .frame(width: 74)
         .frame(height: railH)
         .padding(.vertical, 20)
-    }
-
-    private var railSegmentMain: some View {
-        ZStack(alignment: .top) {
-            VStack(spacing: 6) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(settings.accent.opacity(0.85))
-                        .frame(width: 46, height: 46)
-                    Image(systemName: "music.note")
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                .padding(.top, 12)
-                .padding(.bottom, 6)
-                ForEach(mainPages, id: \.self) { p in
-                    railItem(p)
-                }
-                Color.clear.frame(height: 6)
-            }
-            railLens
-        }
-        .frame(width: 74)
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { v in
-                    lensY = min(max(v.location.y, railCenter(.home)), railCenter(.library))
-                    dragTarget = railPage(atY: v.location.y)
-                }
-                .onEnded { v in
-                    page = railPage(atY: v.location.y)
-                    dragTarget = nil
-                    lensY = nil
-                }
-        )
-        .animation(.spring(response: 0.42, dampingFraction: 0.70), value: dragTarget ?? page)
-        .aoiGlass(corner: 37)
-    }
-
-    private var railSegmentBottom: some View {
-        VStack(spacing: 6) {
-            railButton(.favorites)
-            railButton(.settings)
-        }
-        .frame(width: 74)
-        .padding(.vertical, 10)
-        .aoiGlass(corner: 37)
-    }
-
-    private func railButton(_ p: Page) -> some View {
-        let sel = (dragTarget ?? page) == p
-        return Button {
-            page = p
-        } label: {
-            VStack(spacing: 3) {
-                Image(systemName: p.icon)
-                    .font(.system(size: 21, weight: .semibold))
-                Text(settings.t(p.key))
-                    .font(.system(size: 10, weight: .medium))
-            }
-            .foregroundStyle(sel ? settings.accent : Color.primary.opacity(0.75))
-            .frame(width: 62, height: 56)
-            .background {
-                if sel {
-                    let rr = RoundedRectangle(cornerRadius: 19, style: .continuous)
-                    if #available(iOS 26.0, *) {
-                        Color.clear.glassEffect(.regular.interactive(), in: rr)
-                    } else {
-                        rr.fill(.white.opacity(0.35))
-                    }
-                }
-            }
-        }
-        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -265,11 +129,11 @@ struct MiniPlayer: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(player.current?.title ?? "")
                             .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
+                            .lineLimit(2)
                         Text(player.current?.artist ?? "")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(2)
                     }
                 }
             }
@@ -293,5 +157,108 @@ struct MiniPlayer: View {
                 .frame(width: 40, height: 40)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// One droplet rail segment, used identically for the top (Home/Search/Radio/
+// Library) and bottom (Favorites/Settings) groups. The glass lens rides BEHIND
+// the item content — content drawn over glass gets optically doubled by the
+// backdrop refraction — follows the finger 1:1, grows elastically while the
+// finger holds it, stretches a little toward the drag, and springs onto the
+// chosen item on release. Clearest official glass tier (.clear) throughout.
+struct RailSegment: View {
+    @EnvironmentObject var settings: AppSettings
+    var pages: [Page]
+    var firstCenter: CGFloat
+    var topPad: CGFloat
+    var bottomPad: CGFloat
+    @Binding var selection: Page
+    var showsLogo: Bool = false
+    @State private var dragY: CGFloat? = nil
+    @State private var target: Page? = nil
+    private let step: CGFloat = 62
+
+    private func center(of p: Page) -> CGFloat {
+        firstCenter + CGFloat(pages.firstIndex(of: p) ?? 0) * step
+    }
+    private func pageAt(y: CGFloat) -> Page {
+        pages.min(by: { abs(center(of: $0) - y) < abs(center(of: $1) - y) }) ?? pages[0]
+    }
+    private var dragging: Bool { dragY != nil }
+    private var shown: Page { target ?? selection }
+    private var lensCenter: CGFloat {
+        dragY ?? center(of: pages.contains(selection) ? selection : pages[0])
+    }
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            lens
+            VStack(spacing: 6) {
+                if showsLogo {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(settings.accent.opacity(0.85))
+                            .frame(width: 46, height: 46)
+                        Image(systemName: "music.note")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.top, 12)
+                    .padding(.bottom, 6)
+                }
+                ForEach(pages, id: \.self) { p in item(p) }
+            }
+            .padding(.top, topPad)
+            .padding(.bottom, bottomPad)
+        }
+        .frame(width: 74)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { v in
+                    dragY = min(max(v.location.y, center(of: pages[0])), center(of: pages[pages.count - 1]))
+                    target = pageAt(y: v.location.y)
+                }
+                .onEnded { v in
+                    selection = pageAt(y: v.location.y)
+                    target = nil
+                    dragY = nil
+                }
+        )
+        .aoiGlass(corner: 37)
+    }
+
+    private var lens: some View {
+        let cy = lensCenter
+        let near = pageAt(y: cy)
+        let stretch = dragging ? min(0.22, abs(cy - center(of: near)) / 320.0) : 0
+        let rr = RoundedRectangle(cornerRadius: 19, style: .continuous)
+        return Group {
+            if #available(iOS 26.0, *) {
+                Color.clear.glassEffect(.clear.interactive(), in: rr)
+            } else {
+                rr.fill(.white.opacity(0.30))
+            }
+        }
+        .frame(width: 66, height: 56)
+        .scaleEffect(x: (dragging ? 1.20 : 1.0) + stretch * 0.3, y: (dragging ? 1.20 : 1.0) + stretch)
+        .offset(y: cy - 28)
+        .opacity(pages.contains(selection) || dragging ? 1 : 0)
+        .animation(.spring(response: 0.32, dampingFraction: 0.55), value: dragging)
+        .animation(dragging ? nil : .spring(response: 0.38, dampingFraction: 0.62), value: cy)
+    }
+
+    private func item(_ p: Page) -> some View {
+        let sel = shown == p
+        return VStack(spacing: 3) {
+            Image(systemName: p.icon)
+                .font(.system(size: 21, weight: .semibold))
+            Text(settings.t(p.key))
+                .font(.system(size: 10, weight: .medium))
+        }
+        .foregroundStyle(sel ? settings.accent : Color.primary.opacity(0.75))
+        .frame(width: 62, height: 56)
+        .scaleEffect(sel && dragging ? 1.14 : 1.0)
+        .animation(.spring(response: 0.32, dampingFraction: 0.55), value: sel && dragging)
     }
 }

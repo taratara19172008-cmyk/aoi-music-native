@@ -15,7 +15,7 @@ struct FavoritesView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
                 Text(settings.t("favorites"))
-                    .font(.system(size: 30, weight: .bold, design: .serif))
+                    .font(.system(size: 30, weight: .bold))
                     .padding(.top, 14)
                 if !engine.authorized {
                     Text(settings.t("radio_note"))

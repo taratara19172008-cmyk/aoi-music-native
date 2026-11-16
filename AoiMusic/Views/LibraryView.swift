@@ -17,7 +17,7 @@ struct LibraryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
                 Text(settings.t("library"))
-                    .font(.system(size: 30, weight: .bold, design: .serif))
+                    .font(.system(size: 30, weight: .bold))
                     .padding(.top, 14)
                 if !engine.authorized {
                     Text(settings.t("radio_note"))
@@ -43,9 +43,9 @@ struct LibraryView: View {
                     if !songs.isEmpty {
                         SectionTitle(text: settings.t("lib_songs"))
                         ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHGrid(rows: Array(repeating: GridItem(.fixed(60), spacing: 6), count: 3), spacing: 14) {
+                            LazyHGrid(rows: Array(repeating: GridItem(.fixed(76), spacing: 6), count: 3), spacing: 14) {
                                 ForEach(Array(songs.enumerated()), id: \.element.id) { i, s in
-                                    SongRow(song: s, index: i, onTap: { player.playSongs(songs, start: i) }, onAdd: { addSong = s })
+                                    SongRow(song: s, index: i, onTap: { player.playSongs(songs, start: i) }, onAdd: { addSong = s }, rail: true)
                                         .frame(width: colW)
                                 }
                             }
@@ -71,11 +71,11 @@ struct LibraryView: View {
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
     }
 
-    private var colW: CGFloat { UIScreen.main.bounds.width - 138 }
+    private var colW: CGFloat { UIScreen.main.bounds.width - 100 }
 
     private func hGrid(_ items: [CollectionItem], cell: @escaping (CollectionItem) -> some View) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHGrid(rows: Array(repeating: GridItem(.fixed(58), spacing: 8), count: 3), spacing: 14) {
+            LazyHGrid(rows: Array(repeating: GridItem(.fixed(64), spacing: 8), count: 3), spacing: 14) {
                 ForEach(items) { item in cell(item) }
             }
             .padding(.vertical, 4)
@@ -88,17 +88,17 @@ struct LibraryView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
                     .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
+                    .lineLimit(2)
                 if !item.sub.isEmpty {
                     Text(item.sub)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
             }
             Spacer(minLength: 0)
         }
-        .frame(width: colW, height: 58, alignment: .leading)
+        .frame(width: colW, height: 64, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { tap() }
     }

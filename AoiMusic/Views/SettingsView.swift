@@ -13,7 +13,7 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 6) {
                 Text(settings.t("settings"))
-                    .font(.system(size: 30, weight: .bold, design: .serif))
+                    .font(.system(size: 30, weight: .bold))
                     .padding(.top, 14)
 
                 SectionTitle(text: settings.t("account"))

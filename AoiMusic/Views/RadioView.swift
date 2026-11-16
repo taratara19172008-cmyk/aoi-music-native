@@ -16,7 +16,7 @@ struct RadioView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
                 Text(settings.t("radio"))
-                    .font(.system(size: 30, weight: .bold, design: .serif))
+                    .font(.system(size: 30, weight: .bold))
                     .padding(.top, 14)
                 if !engine.authorized {
                     Text(settings.t("radio_note"))
@@ -78,12 +78,12 @@ struct RadioView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             Text(item.title)
                 .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
+                .lineLimit(2)
             if !item.sub.isEmpty {
                 Text(item.sub)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

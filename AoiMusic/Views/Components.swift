@@ -43,6 +43,7 @@ struct SongRow: View {
     var onAdd: (() -> Void)? = nil
     var showFav: Bool = true
     var showShare: Bool = false
+    var rail: Bool = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -56,12 +57,12 @@ struct SongRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(song.title)
                     .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .foregroundStyle(player.current?.id == song.id ? settings.accent : .primary)
-                Text(song.artist + (song.album.isEmpty ? "" : " · \(song.album)"))
+                Text(rail ? song.artist : song.artist + (song.album.isEmpty ? "" : " · \(song.album)"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
             Spacer(minLength: 4)
             if player.current?.id == song.id {
@@ -170,11 +171,11 @@ struct CollectionCard: View {
             }
             Text(item.title)
                 .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
+                .lineLimit(2)
             Text(item.sub)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(2)
         }
         .frame(width: width > 0 ? width : nil)
         .frame(maxWidth: width > 0 ? nil : .infinity, alignment: .leading)
@@ -185,7 +186,7 @@ struct SectionTitle: View {
     var text: String
     var body: some View {
         Text(text)
-            .font(.system(.title3, design: .serif).weight(.bold))
+            .font(.title3.weight(.bold))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 18)
             .padding(.bottom, 6)

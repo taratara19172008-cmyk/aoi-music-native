@@ -30,13 +30,13 @@ struct HomeView: View {
         let seen = Set(local.map { $0.id })
         return Array((local + appleHistory.filter { !seen.contains($0.id) }).prefix(12))
     }
-    private var colW: CGFloat { UIScreen.main.bounds.width - 138 }
+    private var colW: CGFloat { UIScreen.main.bounds.width - 100 }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
                 Text(greeting)
-                    .font(.system(size: 30, weight: .bold, design: .serif))
+                    .font(.system(size: 30, weight: .bold))
                     .padding(.top, 14)
                 Text(failed ? settings.t("home_fail") : settings.t("home_sub"))
                     .font(.subheadline)
@@ -99,9 +99,9 @@ struct HomeView: View {
 
     private func songRail(_ songs: [Song]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHGrid(rows: Array(repeating: GridItem(.fixed(60), spacing: 6), count: 3), spacing: 14) {
+            LazyHGrid(rows: Array(repeating: GridItem(.fixed(76), spacing: 6), count: 3), spacing: 14) {
                 ForEach(Array(songs.enumerated()), id: \.element.id) { i, s in
-                    SongRow(song: s, index: i, onTap: { player.playSongs(songs, start: i) }, onAdd: { addSong = s })
+                    SongRow(song: s, index: i, onTap: { player.playSongs(songs, start: i) }, onAdd: { addSong = s }, rail: true)
                         .frame(width: colW)
                 }
             }
@@ -114,11 +114,11 @@ struct HomeView: View {
             ArtworkImage(urlString: s.art(300, 300), size: 118, corner: 12)
             Text(s.title)
                 .font(.caption.weight(.semibold))
-                .lineLimit(1)
+                .lineLimit(2)
             Text(s.artist)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(2)
         }
         .frame(width: 118, alignment: .leading)
         .contentShape(Rectangle())

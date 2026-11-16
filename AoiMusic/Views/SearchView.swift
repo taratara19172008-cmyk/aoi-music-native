@@ -115,8 +115,8 @@ struct SearchView: View {
         HStack(spacing: 10) {
             ArtworkImage(urlString: e.art, size: 46, corner: e.kind == "artist" ? 23 : 8)
             VStack(alignment: .leading, spacing: 2) {
-                Text(e.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Text(e.sub).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(e.name).font(.subheadline.weight(.semibold)).lineLimit(2)
+                Text(e.sub).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
             Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(.tertiary)

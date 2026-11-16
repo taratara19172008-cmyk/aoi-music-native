@@ -124,8 +124,8 @@ struct ArtistView: View {
     }
 
     // Like the original: the artist photo (or its motion version) fills the top
-    // of the page edge to edge, the name sits on the photo in big display type,
-    // and the photo melts into the page background at the bottom. No frame.
+    // of the page edge to edge, the name sits on the photo, and the photo melts
+    // into the page background at the bottom. No frame.
     private func heroBanner(_ d: ArtistDetailResponse.ArtistDetail) -> some View {
         let w = UIScreen.main.bounds.width
         return ZStack(alignment: .bottomLeading) {
@@ -153,7 +153,8 @@ struct ArtistView: View {
                 ],
                 startPoint: .top, endPoint: .bottom)
             Text(d.attributes?.name ?? "")
-                .font(.system(size: 36, weight: .heavy))
+                .font(.system(size: 28, weight: .bold))
+                .lineLimit(2)
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.4), radius: 8, y: 2)
                 .padding(.horizontal, 16)
@@ -184,7 +185,7 @@ struct ArtistView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             Text(v.title)
                 .font(.caption.weight(.semibold))
-                .lineLimit(1)
+                .lineLimit(2)
                 .frame(width: 200, alignment: .leading)
         }
         .contentShape(Rectangle())

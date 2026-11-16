@@ -149,6 +149,16 @@ struct CollectionView: View {
                 }
             }
             .padding(.top, 4)
+            if let intro = introText {
+                Text(intro)
+                    .font(.subheadline)
+                    .lineSpacing(5)
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(.top, 6)
+            }
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -228,6 +238,15 @@ struct CollectionView: View {
         }
     }
 
+    // The album/playlist editorial intro (\u4e13\u8f91\u4ecb\u7ecd\u8bed), shown as a tidy card
+    // under the header when Apple provides one.
+    private var introText: String? {
+        let a = item?.attributes
+        let s = (a?.editorialNotes?.standard ?? a?.editorialNotes?.short ?? a?.description?.standard ?? a?.description?.short ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return s.isEmpty ? nil : s
+    }
+
     private func load(force: Bool = false) async {
         if loaded && !force { return }
         do {
@@ -236,8 +255,10 @@ struct CollectionView: View {
             tracks = tr
         } catch {}
         loaded = true
+        if kind == "album" || kind == "playlist" {
+            motionURLStr = await api.motionURL(kind: kind == "album" ? "albums" : "playlists", id: id)
+        }
         if kind == "album" {
-            motionURLStr = await api.motionURL(kind: "albums", id: id)
             if engine.authorized {
                 albumFav = await api.rating(kind: "albums", id: id)
             }
