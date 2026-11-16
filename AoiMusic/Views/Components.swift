@@ -41,6 +41,7 @@ struct SongRow: View {
     var onTap: () -> Void
     var onAdd: (() -> Void)? = nil
     var showFav: Bool = true
+    var showDownload: Bool = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -66,6 +67,9 @@ struct SongRow: View {
                 Image(systemName: "speaker.wave.2.fill")
                     .font(.caption)
                     .foregroundStyle(settings.accent)
+            }
+            if showDownload {
+                DownloadButton(song: song)
             }
             if showFav {
                 Button {
@@ -93,6 +97,37 @@ struct SongRow: View {
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
         .onAppear { player.hydrateFav(song) }
+    }
+}
+
+struct DownloadButton: View {
+    @EnvironmentObject var downloads: DownloadManager
+    @EnvironmentObject var player: Player
+    @EnvironmentObject var settings: AppSettings
+    var song: Song
+
+    var body: some View {
+        let pid = song.playbackId
+        Button {
+            if downloads.isDownloaded(pid) {
+                player.showToast(settings.t("downloaded"))
+            } else {
+                downloads.download(song)
+                player.showToast(settings.t("downloading"))
+            }
+        } label: {
+            Group {
+                if downloads.active.contains(pid) {
+                    ProgressView()
+                } else {
+                    Image(systemName: downloads.isDownloaded(pid) ? "checkmark.circle.fill" : "arrow.down.circle")
+                        .font(.body)
+                        .foregroundStyle(downloads.isDownloaded(pid) ? settings.accent : .secondary)
+                }
+            }
+            .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
     }
 }
 
