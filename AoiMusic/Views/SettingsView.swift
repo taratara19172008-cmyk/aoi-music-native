@@ -42,7 +42,7 @@ struct SettingsView: View {
                 .aoiGlass(corner: 18)
 
                 SectionTitle(text: settings.t("theme"))
-                HStack(spacing: 12) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 40), spacing: 12)], alignment: .leading, spacing: 12) {
                     ForEach(Accents.presets) { p in
                         Button { settings.accentHex = p.hex } label: {
                             Circle()
@@ -120,6 +120,7 @@ struct SettingsView: View {
                 Spacer(minLength: 90)
             }
             .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollIndicators(.hidden)
         .onAppear { customColor = settings.accent }
