@@ -1,0 +1,23 @@
+workflows:
+  build-ipa:
+    name: Build IPA
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+    scripts:
+      - name: Build app (unsigned)
+        script: |
+          xcodebuild -project AoiMusic.xcodeproj -scheme AoiMusic -configuration Release -sdk iphoneos \
+            -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Package IPA
+        script: |
+          APP=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "APP=$APP"
+          test -n "$APP"
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry AoiMusic-Native.ipa Payload
+          ls -la AoiMusic-Native.ipa
+    artifacts:
+      - AoiMusic-Native.ipa
