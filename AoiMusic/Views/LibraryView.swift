@@ -9,6 +9,7 @@ struct LibraryView: View {
     @State private var playlists: [CollectionItem] = []
     @State private var songs: [Song] = []
     @State private var artists: [CollectionItem] = []
+    @State private var albums: [CollectionItem] = []
     @State private var loaded = false
     @State private var showCreate = false
     @State private var addSong: Song?
@@ -41,6 +42,15 @@ struct LibraryView: View {
                         ForEach(playlists) { p in
                             CollectionCard(item: p, width: 0)
                                 .onTapGesture { nav.detail = .collection(kind: "lplaylist", id: p.id) }
+                        }
+                    }
+                    if !albums.isEmpty {
+                        SectionTitle(text: settings.t("lib_albums"))
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                            ForEach(albums) { a in
+                                CollectionCard(item: a, width: 0)
+                                    .onTapGesture { nav.detail = .collection(kind: "album", id: a.id) }
+                            }
                         }
                     }
                     if !songs.isEmpty {
@@ -81,5 +91,6 @@ struct LibraryView: View {
         playlists = (try? await api.libraryPlaylists()) ?? []
         songs = (try? await api.librarySongs()) ?? []
         artists = (try? await api.libraryArtists()) ?? []
+        albums = (try? await api.libraryAlbums()) ?? []
     }
 }
