@@ -12,7 +12,7 @@ struct EngineItem: Decodable {
 }
 
 final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
-    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html")!
+    static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html?v=3")!
     let webView: WKWebView
     @Published var ready = false
     @Published var authorized = false
@@ -94,8 +94,8 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     func authorize() {
         if !ready {
             pendingAuthorize = true
-            lastError = "engine not ready, reloading"
-            webView.reload()
+            if !pageLoaded { webView.reload() }
+            lastError = "engine not ready yet, will continue when ready"
             return
         }
         DispatchQueue.main.async { [weak self] in
@@ -153,8 +153,14 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         popupWebView = nil
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { pageLoaded = true }
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { lastError = "page load failed: " + error.localizedDescription }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { lastError = "page load failed: " + error.localizedDescription }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        lastError = "page load failed: " + error.localizedDescription
+    }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        lastError = "page load failed: " + error.localizedDescription
+    }
     private static func topPresenter() -> UIViewController? {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
         var top = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
