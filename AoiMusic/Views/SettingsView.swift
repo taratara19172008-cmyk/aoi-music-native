@@ -40,6 +40,10 @@ struct SettingsView: View {
                 }
                 .padding(12)
                 .aoiGlass(corner: 18)
+                Text(engineDiag)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
 
                 SectionTitle(text: settings.t("theme"))
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 40), spacing: 12)], alignment: .leading, spacing: 12) {
@@ -124,6 +128,12 @@ struct SettingsView: View {
         }
         .scrollIndicators(.hidden)
         .onAppear { customColor = settings.accent }
+    }
+
+    private var engineDiag: String {
+        var s = "Engine ready: \(engine.ready ? "yes" : "no") · Page loaded: \(engine.pageLoaded ? "yes" : "no")"
+        if !engine.lastError.isEmpty { s += " · Error: \(engine.lastError)" }
+        return s
     }
 
     private func langPill(_ title: String, _ code: String) -> some View {
