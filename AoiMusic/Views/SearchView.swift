@@ -81,7 +81,7 @@ struct SearchView: View {
                         SectionTitle(text: settings.t("albums"))
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                             ForEach(albums) { a in
-                                CollectionCard(item: a, width: 160)
+                                CollectionCard(item: a, width: 0)
                                     .onTapGesture {
                                         player.recordSearch(.init(kind: "album", id: a.id, name: a.title, sub: a.sub, art: a.art(160, 160), song: nil))
                                         nav.detail = .collection(kind: "album", id: a.id)
@@ -93,7 +93,7 @@ struct SearchView: View {
                         SectionTitle(text: settings.t("playlists"))
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                             ForEach(playlists) { p in
-                                CollectionCard(item: p, width: 160)
+                                CollectionCard(item: p, width: 0)
                                     .onTapGesture {
                                         player.recordSearch(.init(kind: "playlist", id: p.id, name: p.title, sub: p.sub, art: p.art(160, 160), song: nil))
                                         nav.detail = .collection(kind: "playlist", id: p.id)
