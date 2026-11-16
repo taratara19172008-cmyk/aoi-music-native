@@ -164,7 +164,7 @@ struct NowPlayingView: View {
         }
         guard let cur = player.current else { return }
         Task {
-            if let s = await api.songFull(id: cur.id), let aid = s.relationships?.albums?.data?.first?.id {
+            if let s = await api.songFull(for: cur), let aid = s.relationships?.albums?.data?.first?.id {
                 nav.showNowPlaying = false
                 nav.detail = .collection(kind: "album", id: aid)
             } else {
@@ -181,7 +181,7 @@ struct NowPlayingView: View {
         }
         guard let cur = player.current else { return }
         Task {
-            if let s = await api.songFull(id: cur.id), let aid = s.relationships?.artists?.data?.first?.id {
+            if let s = await api.songFull(for: cur), let aid = s.relationships?.artists?.data?.first?.id {
                 nav.showNowPlaying = false
                 nav.detail = .artist(id: aid)
             } else {
