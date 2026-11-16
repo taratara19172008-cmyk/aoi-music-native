@@ -20,7 +20,7 @@ struct RootView: View {
     @EnvironmentObject var engine: EngineBridge
     @EnvironmentObject var nav: AppNav
     @State private var page: Page = .home
-    @State private var railDrag: Page? = nil
+    @State private var railDragY: CGFloat? = nil
 
     var body: some View {
         ZStack {
@@ -103,14 +103,41 @@ struct RootView: View {
         [Page.home, .search, .radio, .library, .settings].min(by: { abs(railCenter($0) - y) < abs(railCenter($1) - y) }) ?? .home
     }
 
+    @ViewBuilder
+    private func railLens(y: CGFloat) -> some View {
+        let rr = RoundedRectangle(cornerRadius: 19, style: .continuous)
+        Group {
+            if #available(iOS 26.0, *) {
+                Color.clear
+                    .frame(width: 66, height: 56)
+                    .glassEffect(.regular, in: rr)
+            } else {
+                rr.fill(.white.opacity(0.35))
+                    .frame(width: 66, height: 56)
+            }
+        }
+        .shadow(color: .black.opacity(0.10), radius: 6, y: 2)
+        .scaleEffect(railDragY != nil ? 1.10 : 1.0)
+        .offset(y: y - 28)
+        .animation(railDragY == nil ? .spring(response: 0.42, dampingFraction: 0.60) : nil, value: y)
+        .animation(.spring(response: 0.30, dampingFraction: 0.62), value: railDragY != nil)
+    }
+
     private var rail: some View {
-        let target = railDrag ?? page
+        Group {
+            if #available(iOS 26.0, *) {
+                GlassEffectContainer(spacing: 26) { railBody }
+            } else {
+                railBody
+            }
+        }
+    }
+
+    private var railBody: some View {
+        let target = railDragY.map { railPage(atY: $0) } ?? page
+        let lensY = min(max(railDragY ?? railCenter(page), railCenter(.home)), railCenter(.settings))
         return ZStack(alignment: .top) {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(settings.accent.opacity(0.16))
-                .frame(width: 62, height: 56)
-                .offset(y: railCenter(target) - 28)
-                .animation(.spring(response: 0.32, dampingFraction: 0.82), value: railCenter(target))
+            railLens(y: lensY)
             VStack(spacing: 6) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -134,10 +161,10 @@ struct RootView: View {
         .frame(height: railH)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { v in railDrag = railPage(atY: v.location.y) }
+                .onChanged { v in railDragY = v.location.y }
                 .onEnded { v in
                     page = railPage(atY: v.location.y)
-                    railDrag = nil
+                    railDragY = nil
                 }
         )
         .aoiGlass(corner: 37)
@@ -154,7 +181,7 @@ struct RootView: View {
                 Text(settings.t(p.key))
                     .font(.system(size: 10, weight: .medium))
             }
-            .foregroundStyle((railDrag ?? page) == p ? settings.accent : Color.primary.opacity(0.75))
+            .foregroundStyle(((railDragY.map { railPage(atY: $0) } ?? page) == p) ? settings.accent : Color.primary.opacity(0.75))
             .frame(width: 62, height: 56)
         }
         .buttonStyle(.plain)
