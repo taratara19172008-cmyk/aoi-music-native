@@ -138,7 +138,7 @@ struct AIChatView: View {
         HStack {
             if m.role == "user" { Spacer(minLength: 46) }
             VStack(alignment: .leading, spacing: 8) {
-                if !m.text.isEmpty {
+                if !m.text.isEmpty && m.songs.isEmpty {
                     Text(m.text)
                         .font(.subheadline)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -204,14 +204,18 @@ struct AIChatView: View {
         messages.append(AIChatMessage(role: "user", text: text))
         persist()
         thinking = true
-        let history: [(role: String, content: String)] = messages.suffix(8).map {
-            (role: $0.role == "user" ? "user" : "assistant", content: $0.text)
+        let history: [(role: String, content: String)] = messages.suffix(8).map { m in
+            if m.role == "user" { return (role: "user", content: m.text) }
+            let list = m.songs.map { "\($0.title) — \($0.artist)" }.joined(separator: ", ")
+            return (role: "assistant", content: list.isEmpty ? m.text : "Picked: \(list)")
         }
         Task {
             do {
-                let (reply, picks) = try await AIClient.shared.chat(history: history)
+                let (_, picks) = try await AIClient.shared.chat(history: history)
                 let songs = await AIClient.shared.resolve(picks, api: api)
-                var msg = AIChatMessage(role: "ai", text: reply.isEmpty && songs.isEmpty ? settings.t("ai_no_match") : reply)
+                // Cards only (her call): whatever prose a model might add is
+                // dropped; an empty result shows the app's own status line.
+                var msg = AIChatMessage(role: "ai", text: songs.isEmpty ? settings.t("ai_no_match") : "")
                 msg.songs = songs
                 messages.append(msg)
             } catch {
