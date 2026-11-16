@@ -9,6 +9,9 @@ struct SettingsView: View {
     @State private var customColor: Color = .red
     @State private var pickerItem: PhotosPickerItem?
     @State private var aiKeyText = ""
+    @State private var aiProviderId = AIProvider.currentId
+    @State private var aiCustomEndpoint = ""
+    @State private var aiCustomModel = ""
 
     var body: some View {
         ScrollView {
@@ -46,8 +49,28 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
 
-                SectionTitle(text: settings.t("ai_key"))
+                SectionTitle(text: settings.t("ai_provider"))
                 VStack(alignment: .leading, spacing: 8) {
+                    Picker(settings.t("ai_provider"), selection: $aiProviderId) {
+                        ForEach(AIProvider.all) { p in
+                            Text(p.id == "custom" ? settings.t("ai_custom") : p.name).tag(p.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .onChange(of: aiProviderId) { id in
+                        AIProvider.select(id)
+                        aiKeyText = AIKeyStore.get(forProvider: id)
+                    }
+                    if aiProviderId == "custom" {
+                        TextField(settings.t("ai_endpoint_ph"), text: $aiCustomEndpoint)
+                            .font(.subheadline)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField(settings.t("ai_model_ph"), text: $aiCustomModel)
+                            .font(.subheadline)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
                     SecureField(settings.t("ai_key_ph"), text: $aiKeyText)
                         .font(.subheadline)
                         .textInputAutocapitalization(.never)
@@ -58,7 +81,12 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button(settings.t("save")) {
-                            AIKeyStore.set(aiKeyText.trimmingCharacters(in: .whitespacesAndNewlines))
+                            AIProvider.select(aiProviderId)
+                            if aiProviderId == "custom" {
+                                AIProvider.setCustom(endpoint: aiCustomEndpoint.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                     model: aiCustomModel.trimmingCharacters(in: .whitespacesAndNewlines))
+                            }
+                            AIKeyStore.set(aiKeyText.trimmingCharacters(in: .whitespacesAndNewlines), forProvider: aiProviderId)
                             player.showToast(settings.t("ai_key_saved"))
                         }
                         .font(.subheadline.weight(.semibold))
@@ -68,7 +96,12 @@ struct SettingsView: View {
                 }
                 .padding(12)
                 .aoiGlass(corner: 18)
-                .onAppear { aiKeyText = AIKeyStore.get() }
+                .onAppear {
+                    aiProviderId = AIProvider.currentId
+                    aiKeyText = AIKeyStore.get()
+                    aiCustomEndpoint = AIProvider.customEndpoint
+                    aiCustomModel = AIProvider.customModel
+                }
 
                 SectionTitle(text: settings.t("theme"))
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 40), spacing: 12)], alignment: .leading, spacing: 12) {
