@@ -107,12 +107,20 @@ struct SettingsView: View {
                 }
 
                 SectionTitle(text: settings.t("language"))
-                HStack(spacing: 10) {
-                    langPill("中文", "zh")
-                    langPill("English", "en")
+                GeometryReader { geo in
+                    HStack(spacing: 10) {
+                        langPill("中文", "zh")
+                        langPill("English", "en")
+                        Spacer()
+                    }
+                    .padding(12)
+                    .aoiGlass(corner: 18)
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 0)
+                            .onEnded { v in settings.lang = v.location.x < geo.size.width * 0.4 ? "zh" : "en" }
+                    )
                 }
-                .padding(12)
-                .aoiGlass(corner: 18)
+                .frame(height: 60)
 
                 SectionTitle(text: settings.t("about"))
                 Text(settings.t("about_text"))
