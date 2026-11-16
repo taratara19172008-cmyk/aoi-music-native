@@ -127,6 +127,30 @@ final class APIClient: ObservableObject {
         let r: ListResponse<Song> = try await get("/v1/me/library/songs?limit=50")
         return r.data ?? []
     }
+    func libraryAlbums() async throws -> [CollectionItem] {
+        struct LibAlbum: Codable {
+            var id: String
+            var attributes: CollectionAttrs?
+            var relationships: LibRels?
+        }
+        struct LibRels: Codable { var catalog: CatRel? }
+        struct CatRel: Codable { var data: [CatStub]? }
+        struct CatStub: Codable { var id: String }
+        let r: ListResponse<LibAlbum> = try await get("/v1/me/library/albums?include=catalog&limit=50")
+        let libs = r.data ?? []
+        let catIds = libs.compactMap { $0.relationships?.catalog?.data?.first?.id }
+        var catMap: [String: CollectionItem] = [:]
+        if !catIds.isEmpty {
+            let cr: ListResponse<CollectionItem>? = try? await get("/v1/catalog/\(storefront)/albums?ids=\(catIds.joined(separator: ","))")
+            for a in cr?.data ?? [] { catMap[a.id] = a }
+        }
+        return libs.map { lib in
+            if let cid = lib.relationships?.catalog?.data?.first?.id, let cat = catMap[cid] {
+                return cat
+            }
+            return CollectionItem(id: lib.id, type: "library-albums", attributes: lib.attributes)
+        }
+    }
     func libraryArtists() async throws -> [CollectionItem] {
         struct LibArtist: Codable {
             var id: String
