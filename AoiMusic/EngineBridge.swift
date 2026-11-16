@@ -11,13 +11,16 @@ struct EngineItem: Decodable {
     var duration: Double?
 }
 
-final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WKUIDelegate {
+final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
     static let engineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/engine.html")!
     let webView: WKWebView
     @Published var ready = false
     @Published var authorized = false
     @Published var storefront = ""
     @Published var userToken = ""
+    @Published var lastError = ""
+    @Published var pageLoaded = false
+    private var pendingAuthorize = false
 
     var onState: ((Bool) -> Void)?
     var onItem: ((EngineItem?) -> Void)?
@@ -38,6 +41,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         super.init()
         ucc.add(self, name: "aoi")
         webView.uiDelegate = self
+        webView.navigationDelegate = self
         webView.load(URLRequest(url: Self.engineURL))
     }
 
@@ -47,6 +51,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         switch type {
         case "ready":
             ready = true
+            if pendingAuthorize { pendingAuthorize = false; authorize() }
         case "auth":
             authorized = (body["authorized"] as? Bool) ?? false
             storefront = (body["storefront"] as? String) ?? ""
@@ -64,6 +69,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         case "progress":
             onProgress?((body["t"] as? Double) ?? 0, (body["d"] as? Double) ?? 0, (body["isPlaying"] as? Bool) ?? false)
         case "error":
+            lastError = ((body["where"] as? String) ?? "engine") + ": " + ((body["message"] as? String) ?? "")
             onError?((body["where"] as? String) ?? "engine")
         default:
             break
@@ -82,7 +88,21 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         }
         return "\"\(s)\""
     }
-    func authorize() { call("window.AoiEngine && AoiEngine.authorize()") }
+    func authorize() {
+        if !ready {
+            pendingAuthorize = true
+            lastError = "engine not ready, reloading"
+            webView.reload()
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.webView.evaluateJavaScript("window.AoiEngine && AoiEngine.authorize()", completionHandler: { _, err in
+                if let err = err {
+                    DispatchQueue.main.async { self?.lastError = "call failed: " + err.localizedDescription }
+                }
+            })
+        }
+    }
     func unauthorize() { call("window.AoiEngine && AoiEngine.unauthorize()") }
     func playQueue(ids: [String], start: Int, shuffle: Bool, repeatMode: Int) {
         let arr = ids.map { jsString($0) }.joined(separator: ",")
@@ -129,6 +149,9 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         popupVC = nil
         popupWebView = nil
     }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { pageLoaded = true }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { lastError = "page load failed: " + error.localizedDescription }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { lastError = "page load failed: " + error.localizedDescription }
     private static func topPresenter() -> UIViewController? {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
         var top = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
