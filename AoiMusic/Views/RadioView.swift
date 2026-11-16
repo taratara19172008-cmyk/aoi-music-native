@@ -6,7 +6,8 @@ struct RadioView: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var engine: EngineBridge
     @EnvironmentObject var nav: AppNav
-    @State private var items: [CollectionItem] = []
+    @State private var stations: [CollectionItem] = []
+    @State private var playlists: [CollectionItem] = []
     @State private var loaded = false
 
     var body: some View {
@@ -21,16 +22,29 @@ struct RadioView: View {
                         .foregroundStyle(.secondary)
                         .padding(.top, 6)
                 }
-                if items.isEmpty && loaded {
+                if stations.isEmpty && playlists.isEmpty && loaded {
                     Text(settings.t("empty")).foregroundStyle(.secondary).padding(.top, 30)
                 }
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                    ForEach(items) { item in
-                        CollectionCard(item: item, width: 0)
-                            .onTapGesture { tap(item) }
+                if !stations.isEmpty {
+                    SectionTitle(text: settings.t("official_stations"))
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                        ForEach(stations) { item in
+                            CollectionCard(item: item, width: 0)
+                                .onTapGesture { tap(item) }
+                        }
                     }
+                    .padding(.top, 4)
                 }
-                .padding(.top, 10)
+                if !playlists.isEmpty {
+                    SectionTitle(text: settings.t("feat_playlists"))
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                        ForEach(playlists) { item in
+                            CollectionCard(item: item, width: 0)
+                                .onTapGesture { tap(item) }
+                        }
+                    }
+                    .padding(.top, 4)
+                }
                 if !loaded { ProgressView().frame(maxWidth: .infinity).padding(.top, 40) }
                 Spacer(minLength: 90)
             }
@@ -54,13 +68,14 @@ struct RadioView: View {
         if loaded { return }
         loaded = true
         if engine.authorized {
-            items = (try? await api.recommendations()) ?? []
+            let recs = (try? await api.recommendations()) ?? []
+            stations = recs.filter { $0.type == "stations" }
+            playlists = recs.filter { $0.type == "playlists" }
         }
-        if items.isEmpty {
-            // fallback: chart playlists, like the web version's signed-out radio page
-            if let r = try? await api.charts() {
-                items = r.results?.playlists?.data ?? []
-            }
+        if let r = try? await api.charts() {
+            let chartPls = r.results?.playlists?.data ?? []
+            let seen = Set(playlists.map { $0.id })
+            playlists += chartPls.filter { !seen.contains($0.id) }
         }
     }
 }
