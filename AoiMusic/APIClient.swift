@@ -141,6 +141,45 @@ final class APIClient: ObservableObject {
     }
 
     // MARK: - Library
+    func recommendationGroups() async -> [(title: String, items: [CollectionItem])] {
+        struct GAttrs: Codable { var name: String?; var title: String? }
+        struct G2: Codable { var attributes: GAttrs?; var relationships: GRels? }
+        struct GRels: Codable { var contents: ListResponse<CollectionItem>? }
+        struct Resp: Codable { var data: [G2]? }
+        let r: Resp? = try? await get("/v1/me/recommendations")
+        var seen = Set<String>()
+        var groups: [(title: String, items: [CollectionItem])] = []
+        for g in r?.data ?? [] {
+            let items = (g.relationships?.contents?.data ?? []).filter { item in
+                guard !item.id.isEmpty, seen.insert(item.id).inserted else { return false }
+                return !item.title.isEmpty || item.attributes?.artwork?.url != nil
+            }
+            if !items.isEmpty {
+                groups.append((g.attributes?.title ?? g.attributes?.name ?? "", items))
+            }
+        }
+        return groups
+    }
+
+    func favoriteSongs() async -> [Song] {
+        struct Rating: Codable { var id: String }
+        let r: ListResponse<Rating>? = try? await get("/v1/me/ratings/songs?limit=100")
+        let ids = (r?.data ?? []).map { $0.id }
+        if ids.isEmpty { return [] }
+        var byId: [String: Song] = [:]
+        let lib: ListResponse<Song>? = try? await get("/v1/me/library/songs?ids=\(ids.joined(separator: ","))")
+        for s in lib?.data ?? [] {
+            byId[s.id] = s
+            if let c = s.attributes?.playParams?.catalogId { byId[c] = s }
+        }
+        let missing = ids.filter { byId[$0] == nil }
+        if !missing.isEmpty {
+            let cat: ListResponse<Song>? = try? await get("/v1/catalog/\(storefront)/songs?ids=\(missing.joined(separator: ","))")
+            for s in cat?.data ?? [] { byId[s.id] = s }
+        }
+        return ids.compactMap { byId[$0] }
+    }
+
     func libraryPlaylists() async throws -> [CollectionItem] {
         let r: ListResponse<CollectionItem> = try await get("/v1/me/library/playlists?limit=50")
         return r.data ?? []
