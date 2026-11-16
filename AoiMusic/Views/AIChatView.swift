@@ -12,6 +12,7 @@ struct AIChatMessage: Codable, Identifiable {
 // pick is verified against the Apple catalog before it becomes a card.
 struct AIChatView: View {
     @EnvironmentObject var api: APIClient
+    @EnvironmentObject var engine: EngineBridge
     @EnvironmentObject var player: Player
     @EnvironmentObject var settings: AppSettings
     @State private var messages: [AIChatMessage] = []
@@ -190,7 +191,8 @@ struct AIChatView: View {
         .aoiGlass(corner: 24, interactive: true)
         .padding(.horizontal, 4)
         .padding(.top, 6)
-        .padding(.bottom, 86)
+        .padding(.bottom, player.current == nil ? 14 : 86)
+        .animation(.easeInOut(duration: 0.25), value: player.current == nil)
     }
 
     private func persist() {
@@ -211,7 +213,8 @@ struct AIChatView: View {
         }
         Task {
             do {
-                let (_, picks) = try await AIClient.shared.chat(history: history)
+                let profile = engine.authorized ? await AIClient.shared.tasteProfile(api: api) : nil
+                let (_, picks) = try await AIClient.shared.chat(history: history, profile: profile)
                 let songs = await AIClient.shared.resolve(picks, api: api)
                 // Cards only (her call): whatever prose a model might add is
                 // dropped; an empty result shows the app's own status line.
@@ -282,11 +285,19 @@ struct PlaylistAIRecView: View {
                 Button {
                     Task { await fetch() }
                 } label: {
-                    Label(settings.t("ai_more"), systemImage: "arrow.clockwise")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(settings.accent)
+                    HStack(spacing: 6) {
+                        if loading {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        Text(settings.t("ai_more"))
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(settings.accent)
                 }
                 .buttonStyle(.plain)
+                .disabled(loading)
                 .padding(.top, 6)
             }
         }
@@ -308,15 +319,21 @@ struct PlaylistAIRecView: View {
         guard !AIKeyStore.get().isEmpty, !seed.isEmpty, !loading else { return }
         loading = true
         defer { loading = false }
+        let shown = recs
         do {
-            let picks = try await AIClient.shared.recommend(seed: seed, lang: settings.lang)
+            let picks = try await AIClient.shared.recommend(seed: seed, lang: settings.lang, avoid: shown)
             var songs = await AIClient.shared.resolve(picks, api: api)
             let seedIds = Set(seed.map { $0.id })
-            songs.removeAll { seedIds.contains($0.id) }
+            let shownIds = Set(shown.map { $0.id })
+            songs.removeAll { seedIds.contains($0.id) || shownIds.contains($0.id) }
             if !songs.isEmpty {
                 recs = songs
                 Player.saveJSON(storeKey, songs)
+            } else if !shown.isEmpty {
+                player.showToast(settings.t("ai_no_new"))
             }
-        } catch {}
+        } catch {
+            if !shown.isEmpty { player.showToast(settings.t("ai_fail")) }
+        }
     }
 }

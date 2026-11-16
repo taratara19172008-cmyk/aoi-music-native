@@ -71,7 +71,17 @@ struct CollectionView: View {
                                 // boxed the cover in with visible edges.)
                                 VStack(spacing: 0) {
                                     ForEach(Array(tracks.enumerated()), id: \.element.id) { i, s in
-                                        SongRow(song: s, index: i, onTap: { player.playSongs(tracks, start: i) }, onAdd: { addSong = s }, showShare: true, onRemove: kind == "lplaylist" ? { removeTrack(s) } : nil)
+                                        if kind == "lplaylist" {
+                                            // Her own playlists: left-swipe
+                                            // delete is back (v107), red
+                                            // button, same removal the
+                                            // long-press menu performs.
+                                            SwipeDeleteRow(label: settings.t("del")) { removeTrack(s) } content: {
+                                                SongRow(song: s, index: i, onTap: { player.playSongs(tracks, start: i) }, onAdd: { addSong = s }, showShare: true, onRemove: { removeTrack(s) })
+                                            }
+                                        } else {
+                                            SongRow(song: s, index: i, onTap: { player.playSongs(tracks, start: i) }, onAdd: { addSong = s }, showShare: true)
+                                        }
                                     }
                                 }
                                 .padding(.horizontal, 4)
@@ -196,11 +206,17 @@ struct CollectionView: View {
             } else {
                 ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
             }
+            // Long multi-stop melt (v107): the page-bottom colour is the
+            // cover's own bottom-edge colour, and it seeps in gradually
+            // from the halfway point — no visible seam where image ends.
             LinearGradient(
                 stops: [
-                    .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.9), location: 0.0),
-                    .init(color: .clear, location: 0.16),
-                    .init(color: .clear, location: 0.42),
+                    .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.85), location: 0.0),
+                    .init(color: .clear, location: 0.20),
+                    .init(color: .clear, location: 0.44),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.28), location: 0.62),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.62), location: 0.78),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.90), location: 0.92),
                     .init(color: palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95), location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom)

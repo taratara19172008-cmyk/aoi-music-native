@@ -15,6 +15,10 @@ struct HomeView: View {
     @State private var failed = false
     @State private var loaded = false
     @State private var addSong: Song?
+    @State private var moreSongs: [Song] = []
+    @State private var moreAlbums: [CollectionItem] = []
+    @State private var fanArtists: [CollectionItem] = []
+    @State private var moreArtistName = ""
 
     private var greeting: String {
         let h = Calendar.current.component(.hour, from: Date())
@@ -64,6 +68,21 @@ struct HomeView: View {
                 ForEach(Array(groups.enumerated()), id: \.offset) { _, g in
                     GlassSection(title: g.title.isEmpty ? settings.t("feat_playlists") : g.title) {
                         shelf(g.items) { item in tap(item) }
+                    }
+                }
+                if !moreSongs.isEmpty {
+                    GlassSection(title: String(format: settings.t("more_by"), moreArtistName)) {
+                        songRail(moreSongs)
+                    }
+                }
+                if !moreAlbums.isEmpty {
+                    GlassSection(title: String(format: settings.t("latest_from"), moreArtistName)) {
+                        shelf(moreAlbums) { a in nav.detail = .collection(kind: "album", id: a.id) }
+                    }
+                }
+                if !fanArtists.isEmpty {
+                    GlassSection(title: String(format: settings.t("fans_also"), moreArtistName)) {
+                        shelf(fanArtists) { a in nav.detail = .artist(id: a.id) }
                     }
                 }
                 if !mergedHistory.isEmpty {
@@ -173,6 +192,29 @@ struct HomeView: View {
             appleHistory = (try? await api.recentPlayed()) ?? []
             groups = await api.recommendationGroups()
             recSongs = await api.recommendationSongs()
+            await loadPersonalRails()
         }
+    }
+
+    // Personal rails grown out of her own recent listening (v107 — the
+    // official app's "More by X / Latest from X / Fans of X also like"
+    // pattern, but built from HER most-played recent artist rather than
+    // copied from anyone's screenshots): her top recent artist's own
+    // songs, newest albums and similar artists, straight from that
+    // artist's catalog page.
+    private func loadPersonalRails() async {
+        let pool = appleHistory + player.history
+        guard !pool.isEmpty else { return }
+        var counts: [String: Int] = [:]
+        for s in pool where !s.artist.isEmpty { counts[s.artist, default: 0] += 1 }
+        guard let topArtist = counts.max(by: { $0.value < $1.value })?.key else { return }
+        guard let r = try? await api.search(term: topArtist) else { return }
+        let artists = r.results?.artists?.data ?? []
+        guard let artist = artists.first(where: { $0.title == topArtist }) ?? artists.first,
+              let d = try? await api.artistDetail(id: artist.id) else { return }
+        moreArtistName = topArtist
+        moreSongs = Array((d.views?.topSongs?.data ?? []).prefix(9))
+        moreAlbums = Array((d.views?.albums?.data ?? d.relationships?.albums?.data ?? []).prefix(8))
+        fanArtists = Array((d.views?.similarArtists?.data ?? []).prefix(8))
     }
 }

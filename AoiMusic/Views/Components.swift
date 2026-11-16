@@ -34,65 +34,84 @@ struct ArtworkImage: View {
     }
 }
 
-// MARK: - Marquee text (v106)
+// MARK: - Marquee text (v107 rewrite)
 // Her rules: titles never truncate, never shrink, at most two lines, and
-// rows stay uniform. Text that fits in `maxLines` lines sits still; text
-// that doesn't slowly scrolls sideways inside its own slot until the whole
-// string has been shown, then loops. Overflow is measured with NSString so
-// no hidden layout passes are needed.
+// rows stay uniform. v106 measured its slot through a background
+// GeometryReader attached to a group that ALSO contained the scrolling
+// text — in list rows the measured width never matched the final slot
+// (so it sat in the static branch and truncated with hyphens/ellipses),
+// while on open pages the fixedSize scrolling text took part in layout
+// and stretched the whole page wider than the screen. Now the layout
+// footprint is a plain static Text and nothing else; the width is
+// measured on that footprint alone, and the scrolling copy lives in an
+// overlay — which by definition cannot change the layout size — clipped
+// to the slot, moving only inside it.
 struct MarqueeText: View {
     var text: String
     var font: Font
     var uiFont: UIFont
     var color: Color = .primary
     var maxLines: Int = 2
-    @State private var boxW: CGFloat = 0
+    @State private var slotW: CGFloat = 0
     @State private var offsetX: CGFloat = 0
 
     private var intrinsicW: CGFloat { (text as NSString).size(withAttributes: [.font: uiFont]).width }
+
+    // Fits = renders inside the slot within maxLines lines WITHOUT the
+    // system breaking a word: one latin word wider than the slot would
+    // come back hyphenated ("Work-ing"), which she banned — those titles
+    // scroll instead. (CJK wraps per character, so the height test alone
+    // decides there.)
     private var fits: Bool {
-        guard boxW > 0 else { return true }
+        guard slotW > 1 else { return true }
         let rect = (text as NSString).boundingRect(
-            with: CGSize(width: boxW, height: .greatestFiniteMagnitude),
+            with: CGSize(width: slotW, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: [.font: uiFont], context: nil)
-        return rect.height <= uiFont.lineHeight * CGFloat(maxLines) + 2
+        guard rect.height <= uiFont.lineHeight * CGFloat(maxLines) + 2 else { return false }
+        for word in text.split(whereSeparator: { $0 == " " || $0 == "·" }) {
+            let w = String(word)
+            if w.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains(Int($0.value)) }) { continue }
+            if (w as NSString).size(withAttributes: [.font: uiFont]).width > slotW { return false }
+        }
+        return true
     }
-    private var travel: CGFloat { max(intrinsicW - boxW + 44, 0) }
+    private var travel: CGFloat { max(intrinsicW - slotW + 44, 0) }
+    private var taskKey: String { "\(text)|\(Int(slotW))" }
 
     var body: some View {
-        Group {
-            if fits {
-                Text(text)
-                    .font(font)
-                    .foregroundStyle(color)
-                    .lineLimit(maxLines)
-                    .multilineTextAlignment(.leading)
-            } else {
-                Text(text)
-                    .font(font)
-                    .foregroundStyle(color)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .offset(x: offsetX)
-                    .clipped()
-                    .task(id: text) { await scrollLoop() }
+        Text(text)
+            .font(font)
+            .foregroundStyle(color)
+            .lineLimit(maxLines)
+            .multilineTextAlignment(.leading)
+            .opacity(fits ? 1 : 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                GeometryReader { g in
+                    Color.clear
+                        .onAppear { slotW = g.size.width }
+                        .onChange(of: g.size.width) { _, w in slotW = w }
+                }
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(GeometryReader { g in
-            Color.clear
-                .onAppear { boxW = g.size.width }
-                .onChange(of: g.size.width) { boxW = $0 }
-        })
+            .overlay(alignment: .topLeading) {
+                if !fits {
+                    ZStack(alignment: .leading) {
+                        Text(text)
+                            .font(font)
+                            .foregroundStyle(color)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .offset(x: offsetX)
+                    }
+                    .frame(width: max(slotW, 1), height: uiFont.lineHeight + 4, alignment: .leading)
+                    .clipped()
+                    .task(id: taskKey) { await scrollLoop() }
+                }
+            }
     }
 
     private func scrollLoop() async {
-        while !Task.isCancelled {
-            if boxW > 0, !fits { break }
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            if Task.isCancelled { return }
-        }
         while !Task.isCancelled {
             offsetX = 0
             try? await Task.sleep(nanoseconds: 1_400_000_000)
@@ -101,6 +120,7 @@ struct MarqueeText: View {
             if d <= 0 { return }
             withAnimation(.linear(duration: d)) { offsetX = -travel }
             try? await Task.sleep(nanoseconds: UInt64(d * 1_000_000_000) + 1_200_000_000)
+            if Task.isCancelled { return }
         }
     }
 }
@@ -225,6 +245,84 @@ struct SongRow: View {
             SongPreview(song: song)
         }
         .sheet(item: $shareItem) { ShareSheet(items: [$0.url]) }
+    }
+}
+
+// MARK: - Swipe-to-delete row (v107)
+// The v106 glass rework dropped the swipe actions from her lists; this
+// brings left-swipe delete back without a List (pages are ScrollView +
+// glass panels). The row content slides over a red delete button; while
+// displaced it picks up a frosted backing so the button never bleeds
+// through the transparent row. The drag only claims clearly horizontal
+// movement, so ordinary vertical scrolling still starts on a row.
+struct SwipeDeleteRow<Content: View>: View {
+    var label: String
+    var action: () -> Void
+    @ViewBuilder var content: () -> Content
+    @State private var dragX: CGFloat = 0
+    @State private var open = false
+
+    private let reveal: CGFloat = 74
+    private var shown: CGFloat {
+        let base = open ? -reveal : 0
+        return min(8, max(-reveal - 26, base + dragX))
+    }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            Button {
+                close()
+                action()
+            } label: {
+                Text(label)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: reveal)
+                    .frame(maxHeight: .infinity)
+                    .background(Color(red: 0.92, green: 0.16, blue: 0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .opacity(shown < -2 ? 1 : 0)
+            content()
+                .background {
+                    if shown < -1 {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(.regularMaterial)
+                            .opacity(min(1, -shown / 40))
+                    }
+                }
+                .offset(x: shown)
+                .gesture(
+                    DragGesture(minimumDistance: 14)
+                        .onChanged { v in
+                            if abs(v.translation.width) > abs(v.translation.height) * 1.4 {
+                                dragX = v.translation.width
+                            }
+                        }
+                        .onEnded { v in
+                            let end = (open ? -reveal : 0) + v.translation.width
+                            withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) {
+                                open = end < -reveal / 2
+                                dragX = 0
+                            }
+                        }
+                )
+                .overlay {
+                    if open {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { close() }
+                    }
+                }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func close() {
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) {
+            open = false
+            dragX = 0
+        }
     }
 }
 

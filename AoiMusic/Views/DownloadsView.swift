@@ -32,7 +32,11 @@ struct FavoritesView: View {
                                 .padding(.vertical, 4)
                         } else {
                             ForEach(Array(player.favSongs.enumerated()), id: \.element.id) { i, s in
-                                SongRow(song: s, index: i, onTap: { player.playSongs(player.favSongs, start: i) }, onAdd: { addSong = s })
+                                // Left-swipe delete (v107): the red
+                                // button takes the song out of Favorites.
+                                SwipeDeleteRow(label: settings.t("del")) { player.toggleFav(s, lang: settings.lang) } content: {
+                                    SongRow(song: s, index: i, onTap: { player.playSongs(player.favSongs, start: i) }, onAdd: { addSong = s })
+                                }
                             }
                         }
                     }

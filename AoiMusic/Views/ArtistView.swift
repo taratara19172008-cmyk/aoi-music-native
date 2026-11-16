@@ -161,10 +161,12 @@ struct ArtistView: View {
             }
             LinearGradient(
                 stops: [
-                    .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.9), location: 0.0),
-                    .init(color: .clear, location: 0.14),
-                    .init(color: .clear, location: 0.30),
-                    .init(color: .black.opacity(0.42), location: 0.72),
+                    .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.85), location: 0.0),
+                    .init(color: .clear, location: 0.18),
+                    .init(color: .clear, location: 0.34),
+                    .init(color: .black.opacity(0.34), location: 0.64),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.45), location: 0.80),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.80), location: 0.92),
                     .init(color: palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95), location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom)

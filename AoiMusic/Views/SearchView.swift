@@ -14,25 +14,35 @@ struct SearchView: View {
     @State private var searching = false
     @State private var addSong: Song?
 
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField(settings.t("search_ph"), text: $term)
-                        .onSubmit { runSearch() }
-                        .submitLabel(.search)
-                    if !term.isEmpty {
-                        Button { term = ""; searched = false } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
+    // The search field lives OUTSIDE the scroll view (v107): inside it,
+    // tapping the field made the scroll view shove everything upward to
+    // keep the field clear of the keyboard. Pinned above the scroll area
+    // with the page ignoring the keyboard inset, the box does not move.
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(settings.t("search_ph"), text: $term)
+                .onSubmit { runSearch() }
+                .submitLabel(.search)
+            if !term.isEmpty {
+                Button { term = ""; searched = false } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                .aoiGlass(corner: 22)
-                .padding(.top, 14)
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .aoiGlass(corner: 22)
+        .padding(.top, 14)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            searchBar
+                .padding(.horizontal, 6)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
 
                 if !searched {
                     if !player.searchHistory.isEmpty {
@@ -105,12 +115,14 @@ struct SearchView: View {
                         }
                     }
                 }
-                Spacer(minLength: 90)
+                    Spacer(minLength: 90)
+                }
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .scrollIndicators(.hidden)
         }
-        .scrollIndicators(.hidden)
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
     }
 
