@@ -38,18 +38,5 @@
 	<array>
 		<string>audio</string>
 	</array>
-	<key>WKAppBoundDomains</key>
-	<array>
-		<string>taratara19172008-cmyk.github.io</string>
-		<string>js-cdn.music.apple.com</string>
-		<string>authorize.music.apple.com</string>
-		<string>music.apple.com</string>
-		<string>appleid.apple.com</string>
-		<string>id.apple.com</string>
-		<string>api.music.apple.com</string>
-		<string>amp-api.music.apple.com</string>
-		<string>aoi-relay.vercel.app</string>
-		<string>audio-ssl.itunes.apple.com</string>
-	</array>
 </dict>
 </plist>
