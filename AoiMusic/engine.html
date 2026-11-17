@@ -13,7 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.0';
+window.ENGINE_VERSION = '109.1';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -128,6 +128,11 @@ function loadedQueueIds() {
     return out;
   } catch (e) { return []; }
 }
+function parseUnresolved(e) {
+  const m = /could not be resolved:?\s*([0-9]+(?:\s*,\s*[0-9]+)*)/i.exec(String((e && e.message) || e));
+  if (!m) return [];
+  return m[1].split(',').map(s => s.trim()).filter(Boolean);
+}
 
 window.AoiEngine = {
   async authorize() {
@@ -176,17 +181,45 @@ window.AoiEngine = {
           }
         }
       }
+      let playIndex = start;
       if (!jumped) {
         post({ type: 'log', message: 'playQueue start (' + ids.length + ' songs @' + start + ')' });
-        await music.setQueue({ songs: ids, startIndex: start });
+        // v109.1 drop-and-retry: MusicKit rejects the WHOLE setQueue
+        // when even one id cannot be resolved in this storefront
+        // (observed on device 2026-11-17: a 38-song list died on one
+        // CN-unavailable track, its id named in the error). Drop the
+        // named ids, shift the start index left past any drops before
+        // it, and retry - the rest of the list plays instead of
+        // nothing at all. Non-resolution errors are not retried.
+        let attemptIds = ids.slice();
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await music.setQueue({ songs: attemptIds, startIndex: playIndex });
+            break;
+          } catch (e) {
+            const bad = parseUnresolved(e);
+            if (!bad.length || attempt >= 3) throw e;
+            let removedBefore = 0;
+            const kept = [];
+            for (let i = 0; i < attemptIds.length; i++) {
+              if (bad.indexOf(String(attemptIds[i])) >= 0) { if (i < playIndex) removedBefore++; }
+              else kept.push(attemptIds[i]);
+            }
+            if (kept.length === attemptIds.length || !kept.length) throw e;
+            post({ type: 'log', message: 'playQueue: dropped unresolvable ' + bad.join(', ') + ', retrying with ' + kept.length });
+            attemptIds = kept;
+            playIndex = Math.max(0, playIndex - removedBefore);
+            if (playIndex >= attemptIds.length) playIndex = attemptIds.length - 1;
+          }
+        }
       }
       // Apply the CAPTURED modes, not the globals: setShuffle/setRepeat
       // may have run during the await and rewritten the globals (the
       // residual race the Codex review caught in round 2).
       music.shuffleMode = sh ? 1 : 0;
       music.repeatMode = mkRepeat(rp);
-      if (!jumped && start > 0) {
-        try { await music.changeToMediaAtIndex(start); }
+      if (!jumped && playIndex > 0) {
+        try { await music.changeToMediaAtIndex(playIndex); }
         catch (e) { post({ type: 'log', message: 'jump after setQueue failed: ' + String((e && e.message) || e) }); }
       }
       await music.play();
