@@ -198,6 +198,7 @@ struct SettingsView: View {
 
     private var engineDiag: String {
         var s = "Engine ready: \(engine.ready ? "yes" : "no") · Page loaded: \(engine.pageLoaded ? "yes" : "no")"
+        s += "\n引擎版本: v" + engine.engineVersion + "（" + engine.engineSource + "）"
         if !engine.lastError.isEmpty { s += "\n" + engine.lastError }
         // Widget data channel (v108): the now-playing widget reads through
         // the app group; if the sideload signature dropped the group, this
