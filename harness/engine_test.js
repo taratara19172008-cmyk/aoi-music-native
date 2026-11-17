@@ -38,7 +38,7 @@ class FakeRequest {
   clone() { return new FakeRequest(this.url, { method: this.method, headers: this.headers, body: this._body }); }
   async arrayBuffer() { return Buffer.from(String(this._body || '')); }
 }
-class FakeXHR { open() { this.openArgs = Array.from(arguments); } send() {} }
+class FakeXHR { open() { this.openArgs = Array.from(arguments); } send() {} addEventListener() {} }
 
 function abortErr() { const e = new Error('The operation was aborted.'); e.name = 'AbortError'; return e; }
 
@@ -111,6 +111,9 @@ const sandbox = {
   encodeURIComponent, decodeURIComponent,
   setInterval: () => 0, clearInterval: () => {}, setTimeout: setTimeout, clearTimeout: clearTimeout,
   location: { href: 'https://music.apple.com/', origin: 'https://music.apple.com' },
+  localStorage: { _m: {}, getItem(k) { return k in this._m ? this._m[k] : null; }, setItem(k, v) { this._m[k] = String(v); } },
+  performance: { now: () => Date.now() },
+  addEventListener: () => {},
   navigator: {},
   document: { addEventListener: (n, f) => { listeners[n] = f; } },
   webkit: { messageHandlers: { aoi: { postMessage: o => posts.push(o) } } },
@@ -138,10 +141,15 @@ const errPosts = () => posts.filter(p => p.type === 'error');
 const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''));
 
 (async () => {
-  // ---- relay rules ----
+  // ---- relay rules (v109.10: switchable, default DIRECT) ----
   rawFetchCalls.length = 0;
   await sandbox.fetch('https://api.music.apple.com/v1/catalog/cn/songs/123');
-  check('api.music.apple.com fetch goes via relay', lastRaw() === RELAY + '?target=' + encodeURIComponent('https://api.music.apple.com/v1/catalog/cn/songs/123'));
+  check('v109.10 default: api fetch goes DIRECT (no relay)', lastRaw() === 'https://api.music.apple.com/v1/catalog/cn/songs/123');
+  check('relay layer logged as direct', logHas(/mode=direct/));
+  sandbox.AoiEngine.setRelay(true);
+  rawFetchCalls.length = 0;
+  await sandbox.fetch('https://api.music.apple.com/v1/catalog/cn/songs/123');
+  check('relay on: api.music.apple.com fetch goes via relay', lastRaw() === RELAY + '?target=' + encodeURIComponent('https://api.music.apple.com/v1/catalog/cn/songs/123'));
   await sandbox.fetch('https://js-cdn.music.apple.com/musickit/v3/musickit.js');
   check('js-cdn fetch NOT rewritten', lastRaw() === 'https://js-cdn.music.apple.com/musickit/v3/musickit.js');
   await sandbox.fetch('https://example.com/x');
@@ -158,7 +166,8 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
   const xhr2 = new FakeXHR();
   xhr2.open('GET', 'https://itunes.apple.com/lookup?id=1');
   check('non-music.apple.com XHR untouched', xhr2.openArgs[1] === 'https://itunes.apple.com/lookup?id=1');
-  check('relay layer logged', logHas(/relay layer on/));
+  // relay stays ON for the playback section (the fake's setQueue
+  // resolution fetch is asserted to use it below).
 
   // ---- boot ----
   await listeners['musickitloaded']();
@@ -189,7 +198,7 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
   await sandbox.AoiEngine.playQueue(['111', '222'], 0, false, 0);
   const sqLoaded = music.setQueueCalls.length, plLoaded = music.playCalls;
   await sandbox.AoiEngine.playQueue(['111', '222'], 0, false, 0);
-  check('already loaded: no reload, play called again', music.setQueueCalls.length === sqLoaded && music.playCalls === plLoaded + 1 && logHas(/already loaded/));
+  check('already loaded: no reload, play called again', music.setQueueCalls.length === sqLoaded && music.playCalls === plLoaded + 1 && logHas(/same song, same list/));
 
   // ---- tapped song itself unresolvable: stop, no substitute ----
   music.reset(); music.unresolvable = new Set(['222']);
@@ -255,20 +264,22 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
   music.playLaterGate = new Promise(r => { releaseGate = r; });
   await sandbox.AoiEngine.playQueue(['1', '2', '3', '4', '5', '6'], 0, false, 0);
   check('gated completion: only the tapped song is loaded', JSON.stringify(music.queue.items.map(x => x.id)) === '["1"]');
-  await sandbox.AoiEngine.next();
-  check('next before completion: rotated to song 2 and playing', music.nowPlayingItem.id === '2' && JSON.stringify(music.setQueueCalls[music.setQueueCalls.length - 1].songs) === '["2"]');
+  const nextP = sandbox.AoiEngine.next();
   releaseGate();
+  await nextP;
+  check('next before completion: rotated to song 2 and playing', music.nowPlayingItem.id === '2' && JSON.stringify(music.setQueueCalls[music.setQueueCalls.length - 1].songs) === '["2"]');
   await new Promise(r => setTimeout(r, 60));
-  check('stale completion: new queue head untouched (song 2)', music.queue.items[0].id === '2');
+  check('stale completion: FULL queue is exactly the new rotation, nothing appended twice', JSON.stringify(music.queue.items.map(x => x.id)) === '["2","3","4","5","6","1"]');
 
   // ---- v109.9: jumpTo to a not-yet-loaded song rotates ----
   music.reset();
   let releaseGate2;
   music.playLaterGate = new Promise(r => { releaseGate2 = r; });
   await sandbox.AoiEngine.playQueue(['1', '2', '3', '4', '5', '6'], 0, false, 0);
-  await sandbox.AoiEngine.jumpTo(3);
-  check('jumpTo unloaded target: rotated from the app list, song 4 playing', music.nowPlayingItem.id === '4' && JSON.stringify(music.setQueueCalls[music.setQueueCalls.length - 1].songs) === '["4"]');
+  const jumpP = sandbox.AoiEngine.jumpTo(3);
   releaseGate2();
+  await jumpP;
+  check('jumpTo unloaded target: rotated from the app list, song 4 playing', music.nowPlayingItem.id === '4' && JSON.stringify(music.setQueueCalls[music.setQueueCalls.length - 1].songs) === '["4"]');
   await new Promise(r => setTimeout(r, 60));
 
   // ---- v109.9: Next after completion uses a plain skip ----
@@ -278,6 +289,31 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
   const sqBefore = music.setQueueCalls.length;
   await sandbox.AoiEngine.next();
   check('next after completion: skip only, no re-queue', music.setQueueCalls.length === sqBefore && music.nowPlayingItem.id === '2');
+
+  // ---- v109.10: re-tapping the playing song keeps the completion alive ----
+  music.reset();
+  let releaseGate3;
+  music.playLaterGate = new Promise(r => { releaseGate3 = r; });
+  await sandbox.AoiEngine.playQueue(['1', '2', '3'], 0, false, 0);
+  const sqRetap = music.setQueueCalls.length, plRetap = music.playCalls;
+  await sandbox.AoiEngine.playQueue(['1', '2', '3'], 0, false, 0);
+  check('re-tap same song+list: no new setQueue, play only', music.setQueueCalls.length === sqRetap && music.playCalls === plRetap + 1);
+  releaseGate3();
+  await new Promise(r => setTimeout(r, 60));
+  check('re-tap same song+list: background completion still landed', JSON.stringify(music.queue.items.map(x => x.id)) === '["1","2","3"]');
+
+  // ---- v109.10: same song from a DIFFERENT list rebuilds the queue ----
+  music.reset();
+  await sandbox.AoiEngine.playQueue(['1', '2', '3'], 0, false, 0);
+  await new Promise(r => setTimeout(r, 60));
+  await sandbox.AoiEngine.playQueue(['1', '9', '8'], 0, false, 0);
+  await new Promise(r => setTimeout(r, 60));
+  check('same song, different list: queue rebuilt from the new list', music.setQueueCalls.length === 2 && JSON.stringify(music.queue.items.map(x => x.id)) === '["1","9","8"]');
+
+  // ---- v109.10: jumpTo with no queue context refuses (no banned API) ----
+  music.reset();
+  await sandbox.AoiEngine.jumpTo(0);
+  check('jumpTo no queue: changeToMediaAtIndex NOT called, error posted', music.jumpCalls === 0 && errPosts().some(p => p.where === 'jumpTo'));
 
   console.log(fails ? ('\n' + fails + ' FAILURES') : '\nALL PASS');
   process.exit(fails ? 1 : 0);
