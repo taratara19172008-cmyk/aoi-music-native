@@ -435,6 +435,32 @@ final class APIClient: ObservableObject {
         return song.id
     }
 
+    // v114: find the SAME recording in the account's own storefront.
+    // A song object fetched from another storefront (radio lists are
+    // the usual source) carries foreign playParams; MusicKit then
+    // silently substitutes the 30s preview for the full track. ISRC
+    // identifies the recording across storefronts; fall back to a
+    // name+artist search match when no ISRC is present.
+    func resolveInStorefront(_ song: Song) async -> Song? {
+        let sf = storefront
+        if sf.isEmpty { return nil }
+        if let isrc = song.attributes?.isrc, !isrc.isEmpty,
+           let enc = isrc.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            let r: ListResponse<Song>? = try? await get("/v1/catalog/\(sf)/songs?filter[isrc]=\(enc)")
+            if let hit = r?.data?.first { return hit }
+        }
+        let term = (song.title + " " + song.artist)
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        if term.isEmpty { return nil }
+        let r: SearchResponse? = try? await get("/v1/catalog/\(sf)/search?term=\(term)&types=songs&limit=25")
+        let wantT = song.title.lowercased().trimmingCharacters(in: .whitespaces)
+        let wantA = song.artist.lowercased().trimmingCharacters(in: .whitespaces)
+        return r?.results?.songs?.data?.first(where: {
+            $0.title.lowercased().trimmingCharacters(in: .whitespaces) == wantT &&
+            (!wantA.isEmpty && $0.artist.lowercased().contains(wantA) || wantA.contains($0.artist.lowercased()))
+        })
+    }
+
     // MARK: - Ratings / favorites
     // Tri-state: true = loved, false = definitively not loved (incl. 404 = no rating),
     // nil = unknown (network/auth failure) — callers must NOT cache nil as "not loved".
