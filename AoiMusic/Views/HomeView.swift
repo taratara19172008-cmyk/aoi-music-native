@@ -39,12 +39,20 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
-                Text(greeting)
-                    .font(.system(size: 30, weight: .bold))
-                    .padding(.top, 14)
-                Text(failed ? settings.t("home_fail") : settings.t("home_sub"))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                // v114: Shazam button in the open space left of the
+                // greeting; tap = listen, match = Now Playing opens.
+                HStack(alignment: .center, spacing: 12) {
+                    ShazamButton()
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(greeting)
+                            .font(.system(size: 30, weight: .bold))
+                        Text(failed ? settings.t("home_fail") : settings.t("home_sub"))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 14)
                 if !mergedHistory.isEmpty {
                     GlassSection(title: settings.t("recent_played")) {
                     ScrollView(.horizontal, showsIndicators: false) {
