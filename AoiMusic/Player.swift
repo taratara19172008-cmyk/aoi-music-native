@@ -201,7 +201,19 @@ final class Player: ObservableObject {
             useEngine = true
             av.pause()
             let ids = list.map { $0.playbackId }
-            engine.playQueue(ids: ids, start: startAt, shuffle: shuffle, repeatMode: repeatMode)
+            // v113 (engine 109.11, GPT option D): hand the engine the
+            // tapped song's full API resource so MusicKit can skip its
+            // catalog fetch for the head item. Catalog songs only - a
+            // library song's resource id is its library id, not the
+            // playback (catalog) id the queue is addressed by.
+            let tapped = list[startAt]
+            var targetJSON: String? = nil
+            if tapped.type == "songs", tapped.playbackId == tapped.id, tapped.attributes != nil,
+               let data = try? JSONEncoder().encode(tapped),
+               let js = String(data: data, encoding: .utf8) {
+                targetJSON = js
+            }
+            engine.playQueue(ids: ids, start: startAt, shuffle: shuffle, repeatMode: repeatMode, targetJSON: targetJSON)
             isPlaying = true
         } else {
             useEngine = false
