@@ -122,6 +122,15 @@ struct MarqueeText: View {
                     .task(id: taskKey) { await scrollLoop() }
                 }
             }
+            // v113: the first measurement can land mid-transition
+            // (detail pages slide in), caching a wrong "fits" that
+            // left over-long titles ellipsized instead of scrolling -
+            // the unfixed Top Songs ellipsis. Re-measure once the
+            // layout has settled.
+            .task(id: taskKey) {
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                measure()
+            }
     }
 
     private func scrollLoop() async {
