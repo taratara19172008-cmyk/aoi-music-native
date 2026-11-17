@@ -89,14 +89,19 @@ final class Player: ObservableObject {
     private func setupEngine() {
         engine.onState = { [weak self] playing in
             guard let self = self, self.useEngine else { return }
-            self.isPlaying = playing
+            if playing != self.isPlaying { self.isPlaying = playing }
             self.updateNowPlayingInfo()
         }
         engine.onProgress = { [weak self] t, d, playing in
             guard let self = self, self.useEngine else { return }
+            // v112: progress ticks arrive twice a second; only publish
+            // values that actually changed (duration/isPlaying), so the
+            // shared Player stops re-rendering the whole view tree on
+            // every tick (GPT review Q5.6). currentTime still updates -
+            // the progress UI needs it.
             self.currentTime = t
-            if d > 0 { self.duration = d }
-            self.isPlaying = playing
+            if d > 0, d != self.duration { self.duration = d }
+            if playing != self.isPlaying { self.isPlaying = playing }
         }
         engine.onItem = { [weak self] item in
             guard let self = self, self.useEngine, let item = item else { return }
@@ -223,6 +228,20 @@ final class Player: ObservableObject {
         } else {
             showToast(Strings.get("no_preview", lang))
         }
+    }
+
+    // v112: one-way controls for the lock screen / Control Centre.
+    // The remote Play and Pause commands used to BOTH call
+    // togglePlay(), so a system Play arriving while Swift believed
+    // playback was running paused the music instead (GPT review
+    // Q5.8). Play only ever plays; Pause only ever pauses.
+    func playOnly() {
+        guard current != nil, !isPlaying else { return }
+        togglePlay()
+    }
+    func pauseOnly() {
+        guard current != nil, isPlaying else { return }
+        togglePlay()
     }
 
     func togglePlay() {
@@ -533,10 +552,11 @@ final class Player: ObservableObject {
     }
 
     // MARK: - lock screen / remote
+    private var lastArtworkKey = ""
     private func setupRemote() {
         let cc = MPRemoteCommandCenter.shared()
-        cc.playCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
-        cc.pauseCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
+        cc.playCommand.addTarget { [weak self] _ in self?.playOnly(); return .success }
+        cc.pauseCommand.addTarget { [weak self] _ in self?.pauseOnly(); return .success }
         cc.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
         cc.nextTrackCommand.addTarget { [weak self] _ in self?.next(); return .success }
         cc.previousTrackCommand.addTarget { [weak self] _ in self?.prev(); return .success }
@@ -565,7 +585,12 @@ final class Player: ObservableObject {
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
         ]
-        if let artStr = cur.art(512, 512), let url = URL(string: artStr) {
+        // v112: updateNowPlayingInfo() runs on every state/item event;
+        // fetch the artwork once per song, not once per event
+        // (GPT review Q5.7).
+        let artKey = cur.playbackId + "|" + (cur.art(512, 512) ?? "")
+        if artKey != lastArtworkKey, let artStr = cur.art(512, 512), let url = URL(string: artStr) {
+            lastArtworkKey = artKey
             URLSession.shared.dataTask(with: url) { data, _, _ in
                 guard let data = data, let img = UIImage(data: data) else { return }
                 WidgetShared.publishArtwork(data)
