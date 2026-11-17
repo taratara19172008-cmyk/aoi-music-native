@@ -15,7 +15,7 @@ import AppIntents
 // v107 put .glassEffect(.clear.interactive()) on the button labels and
 // on her phone the buttons rendered as NOTHING at all (empty widget:
 // gradient + note, no controls). Bog-standard materials always render.
-private let groupId = "group.com.aoimusic.app"
+private let groupId = "group.c2bb27f0fc08e2b5.1"
 private let commandKey = "np_command"
 
 private func sharedDefaults() -> UserDefaults? { UserDefaults(suiteName: groupId) }
@@ -135,18 +135,27 @@ struct NPWidgetView: View {
         }
     }
 
+    // v114: the button IS the glyph - system glass clipped to the
+    // symbol's own silhouette, no disc or ring around it. A white
+    // gradient of the same glyph rides on top for legibility.
     private func glassButton<I: AppIntent>(_ icon: String, intent: I) -> some View {
-        Button(intent: intent) {
+        let glyph = Image(systemName: icon)
+            .font(.system(size: 24, weight: .bold))
+        return Button(intent: intent) {
             ZStack {
-                Circle().fill(.ultraThinMaterial)
-                Circle().strokeBorder(.white.opacity(0.45), lineWidth: 1)
-                Image(systemName: icon)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+                Rectangle()
+                    .fill(.white.opacity(0.001))
+                    .glassEffect(.clear, in: .rect(cornerRadius: 2))
+                    .mask { glyph }
+                glyph
+                    .foregroundStyle(
+                        LinearGradient(colors: [.white.opacity(0.95), .white.opacity(0.55)],
+                                       startPoint: .top, endPoint: .bottom)
+                    )
             }
-            .frame(width: 40, height: 40)
-            .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
+            .frame(width: 52, height: 52)
+            .shadow(color: .black.opacity(0.30), radius: 5, y: 2)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -163,9 +172,63 @@ struct AoiNowPlayingWidget: Widget {
     }
 }
 
+// The app's theme colour, published into the group by the app.
+private func accentColor() -> Color {
+    let hex = sharedDefaults()?.string(forKey: "accent_hex") ?? "#40c8e0"
+    var v: UInt64 = 0
+    let clean = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+    guard Scanner(string: clean).scanHexInt64(&v) else { return .cyan }
+    return Color(red: Double((v >> 16) & 0xff) / 255,
+                 green: Double((v >> 8) & 0xff) / 255,
+                 blue: Double(v & 0xff) / 255)
+}
+
+// v114: Shazam launcher widget - a small square of liquid glass with
+// the official glyph in the theme colour. A widget cannot record
+// audio, so the tap opens the app straight into listening mode
+// (aoimusic://shazam).
+struct ShazamWidgetView: View {
+    var body: some View {
+        ZStack {
+            Image(systemName: "shazam.logo")
+                .font(.system(size: 62, weight: .semibold))
+                .foregroundStyle(accentColor())
+                .shadow(color: accentColor().opacity(0.45), radius: 12)
+            VStack {
+                Spacer()
+                Text("听音识曲")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 2)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .containerBackground(for: .widget) {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                LinearGradient(colors: [accentColor().opacity(0.28), .clear, accentColor().opacity(0.12)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+        }
+        .widgetURL(URL(string: "aoimusic://shazam"))
+    }
+}
+
+struct AoiShazamWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "AoiShazam", provider: NPProvider()) { _ in
+            ShazamWidgetView()
+        }
+        .configurationDisplayName("听音识曲")
+        .description("点一下，打开应用开始识别歌曲")
+        .supportedFamilies([.systemSmall])
+    }
+}
+
 @main
 struct AoiWidgetBundle: WidgetBundle {
     var body: some Widget {
         AoiNowPlayingWidget()
+        AoiShazamWidget()
     }
 }
