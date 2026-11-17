@@ -8,6 +8,8 @@ struct SettingsView: View {
     @EnvironmentObject var player: Player
     @State private var customColor: Color = .red
     @State private var pickerItem: PhotosPickerItem?
+    @State private var cropImage: UIImage?
+    @State private var showCrop = false
     @State private var aiKeyText = ""
     @State private var aiProviderId = AIProvider.currentId
     @State private var aiCustomEndpoint = ""
@@ -156,10 +158,25 @@ struct SettingsView: View {
                     Task {
                         if let data = try? await item.loadTransferable(type: Data.self),
                            let img = UIImage(data: data) {
-                            settings.bgImage = downscale(img)
-                            player.showToast(settings.t("bg_saved"))
+                            // v114: framing step first - she picks the
+                            // exact region that becomes the background.
+                            cropImage = img
+                            showCrop = true
                         } else {
                             player.showToast(settings.t("bg_too_big"))
+                        }
+                    }
+                }
+                .fullScreenCover(isPresented: $showCrop) {
+                    if let img = cropImage {
+                        BgCropView(image: img) { result in
+                            if let r = result {
+                                settings.bgImage = downscale(r)
+                                player.showToast(settings.t("bg_saved"))
+                            }
+                            showCrop = false
+                            cropImage = nil
+                            pickerItem = nil
                         }
                     }
                 }
@@ -203,8 +220,8 @@ struct SettingsView: View {
         // Widget data channel (v108): the now-playing widget reads through
         // the app group; if the sideload signature dropped the group, this
         // says so plainly instead of the widget silently showing nothing.
-        let groupOK = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.aoimusic.app") != nil
-        let hasSong = UserDefaults(suiteName: "group.com.aoimusic.app")?.string(forKey: "np_title") != nil
+        let groupOK = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.c2bb27f0fc08e2b5.1") != nil
+        let hasSong = UserDefaults(suiteName: "group.c2bb27f0fc08e2b5.1")?.string(forKey: "np_title") != nil
         s += "\n小组件通道: " + (groupOK ? (hasSong ? "正常 · 已有歌曲数据" : "正常 · 暂无歌曲数据") : "不可用（签名未包含 App Group）")
         return s
     }
@@ -243,6 +260,126 @@ struct SettingsView: View {
         fmt.scale = 1
         return UIGraphicsImageRenderer(size: size, format: fmt).image { _ in
             img.draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+}
+
+
+// v114: background framing step. The picked photo is shown inside a
+// frame with the screen's own aspect; drag to pan, pinch to zoom
+// (the photo always covers the frame), and "use" renders exactly
+// the framed region as the new background.
+struct BgCropView: View {
+    let image: UIImage
+    var onDone: (UIImage?) -> Void
+    @EnvironmentObject var settings: AppSettings
+    @State private var zoom: CGFloat = 1
+    @State private var lastZoom: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    private var screenAspect: CGFloat {
+        let b = UIScreen.main.bounds
+        return b.height / max(b.width, 1)
+    }
+
+    private func baseScale(frameW: CGFloat, frameH: CGFloat) -> CGFloat {
+        max(frameW / max(image.size.width, 1), frameH / max(image.size.height, 1))
+    }
+
+    private func clamped(_ o: CGSize, frameW: CGFloat, frameH: CGFloat, z: CGFloat) -> CGSize {
+        let bs = baseScale(frameW: frameW, frameH: frameH) * z
+        let maxX = max((image.size.width * bs - frameW) / 2, 0)
+        let maxY = max((image.size.height * bs - frameH) / 2, 0)
+        return CGSize(width: min(max(o.width, -maxX), maxX),
+                      height: min(max(o.height, -maxY), maxY))
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let frameW = geo.size.width - 36
+            let frameH = min(frameW * screenAspect, geo.size.height - 190)
+            let bs = baseScale(frameW: frameW, frameH: frameH) * zoom
+            ZStack {
+                Color.black.ignoresSafeArea()
+                VStack(spacing: 16) {
+                    Text(settings.t("crop_title"))
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .padding(.top, 14)
+                    ZStack {
+                        Image(uiImage: image)
+                            .resizable()
+                            .frame(width: image.size.width * bs, height: image.size.height * bs)
+                            .offset(offset)
+                    }
+                    .frame(width: frameW, height: frameH)
+                    .clipped()
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(.white.opacity(0.65), lineWidth: 1.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture()
+                            .onChanged { v in
+                                offset = clamped(CGSize(width: lastOffset.width + v.translation.width,
+                                                        height: lastOffset.height + v.translation.height),
+                                                 frameW: frameW, frameH: frameH, z: zoom)
+                            }
+                            .onEnded { _ in lastOffset = offset }
+                    )
+                    .simultaneousGesture(
+                        MagnifyGesture()
+                            .onChanged { v in
+                                zoom = min(max(lastZoom * v.magnification, 1), 4)
+                                offset = clamped(offset, frameW: frameW, frameH: frameH, z: zoom)
+                            }
+                            .onEnded { _ in
+                                lastZoom = zoom
+                                lastOffset = offset
+                            }
+                    )
+                    Text(settings.t("crop_hint"))
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.65))
+                    HStack(spacing: 14) {
+                        Button(settings.t("cancel")) { onDone(nil) }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 11)
+                            .aoiGlass(corner: 16, interactive: true)
+                        Button(settings.t("crop_use")) {
+                            onDone(render(frameW: frameW, frameH: frameH))
+                        }
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 11)
+                        .background(Capsule().fill(settings.accent))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    // Render exactly the framed region: the editor shows the image at
+    // baseScale*zoom with `offset`; replay that transform at 2x into
+    // a bitmap of the frame's aspect.
+    private func render(frameW: CGFloat, frameH: CGFloat) -> UIImage {
+        let out = CGSize(width: frameW * 2, height: frameH * 2)
+        let k = out.width / frameW
+        let bs = baseScale(frameW: frameW, frameH: frameH) * zoom * k
+        let renderer = UIGraphicsImageRenderer(size: out)
+        return renderer.image { _ in
+            UIColor.black.setFill()
+            UIRectFill(CGRect(origin: .zero, size: out))
+            let drawSize = CGSize(width: image.size.width * bs, height: image.size.height * bs)
+            let origin = CGPoint(x: out.width / 2 - drawSize.width / 2 + offset.width * k,
+                                 y: out.height / 2 - drawSize.height / 2 + offset.height * k)
+            image.draw(in: CGRect(origin: origin, size: drawSize))
         }
     }
 }
