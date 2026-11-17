@@ -187,17 +187,28 @@ enum CoverPaletteLoader {
         // cover's top edge and the melt at the hero's foot continues its
         // bottom edge, so image and page read as one surface.
         // (3) The most vibrant cluster, kept for the page glow.
-        let size = CGSize(width: 32, height: 32)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let small = renderer.image { ctx in image.draw(in: CGRect(origin: .zero, size: size)) }
-        guard let cg = small.cgImage, let data = cg.dataProvider?.data,
-              let bytes = CFDataGetBytePtr(data) else { return .fallback }
-        let bpp = cg.bitsPerPixel / 8
-        let bpr = cg.bytesPerRow
-        let W = Int(size.width), H = Int(size.height)
+        // v113: sample through an EXPLICIT RGBA bitmap context. The
+        // old code read a UIGraphicsImageRenderer's bytes as if they
+        // were R,G,B in memory - on device they are B,G,R
+        // (byteOrder32Little), so every palette came out with red
+        // and blue swapped: a red cover painted the Now Playing page
+        // blue, a teal cover painted it olive. byteOrder32Big +
+        // premultipliedLast pins the memory layout to R,G,B,A.
+        let W = 32, H = 32
+        guard let src = image.cgImage else { return .fallback }
+        let rawPtr = UnsafeMutablePointer<UInt8>.allocate(capacity: W * H * 4)
+        defer { rawPtr.deallocate() }
+        rawPtr.initialize(repeating: 0, count: W * H * 4)
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        guard let ctx = CGContext(data: rawPtr, width: W, height: H, bitsPerComponent: 8,
+                                  bytesPerRow: W * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: info) else { return .fallback }
+        ctx.translateBy(x: 0, y: CGFloat(H))
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.draw(src, in: CGRect(x: 0, y: 0, width: W, height: H))
         func px(_ x: Int, _ y: Int) -> (Double, Double, Double) {
-            let o = y * bpr + x * bpp
-            return (Double(bytes[o]) / 255, Double(bytes[o + 1]) / 255, Double(bytes[o + 2]) / 255)
+            let o = (y * W + x) * 4
+            return (Double(rawPtr[o]) / 255, Double(rawPtr[o + 1]) / 255, Double(rawPtr[o + 2]) / 255)
         }
         var buckets: [Int: (r: Double, g: Double, b: Double, n: Double)] = [:]
         var vR = 0.0, vG = 0.0, vB = 0.0, vW = 0.0
@@ -248,7 +259,7 @@ enum CoverPaletteLoader {
         }
         func col(_ c: (Double, Double, Double)) -> Color { Color(red: c.0, green: c.1, blue: c.2) }
         let white = (1.0, 1.0, 1.0)
-        let topC = mix(mix(edgeTop, dom, 0.35), white, 0.18)
+        let topC = mix(mix(edgeTop, dom, 0.35), white, 0.12)
         let botC = shade(mix(edgeBot, dom, 0.45), 0.70)
         let lum = 0.2126 * dom.0 + 0.7152 * dom.1 + 0.0722 * dom.2
         return CoverPalette(top: col(topC), bottom: col(botC), glow: col(vib), isDark: lum < 0.42)
