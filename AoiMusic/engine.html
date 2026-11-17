@@ -13,7 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.6';
+window.ENGINE_VERSION = '109.7';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -53,6 +53,16 @@ let music = null;
         const target = raw ? relayURL(raw) : null;
         if (target) {
           if (typeof input === 'string' || !input) return origFetch(target, init);
+          // Request object: hand the ORIGINAL request to the relay
+          // URL - fetch(url, request) preserves method, headers, body
+          // and the AbortSignal/credentials/mode. Rebuilding it (the
+          // v109.3 way) dropped the signal, so MusicKit could never
+          // cancel superseded requests and stale work piled up at the
+          // relay (Codex consult, 2026-11-17). The Safari service
+          // worker forwards originals the same way and is fast on
+          // the same phone and relay. Rebuild only when an init was
+          // also passed alongside the Request (rare).
+          if (!init) return origFetch(target, input);
           const ni = { method: input.method, headers: input.headers, redirect: 'follow' };
           if (input.method !== 'GET' && input.method !== 'HEAD') {
             return input.clone().arrayBuffer().then(body => { ni.body = body; return origFetch(target, ni); });
