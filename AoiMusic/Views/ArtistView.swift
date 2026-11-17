@@ -146,47 +146,46 @@ struct ArtistView: View {
             if let m = artistMotion, let u = URL(string: m) {
                 LoopingVideo(url: u)
                     .frame(width: w, height: 360)
+                    .mask(heroFadeMask)
             } else if let urlStr = d.attributes?.artwork?.urlString(1200, 1000), let url = URL(string: urlStr) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    default: Color.white.opacity(0.3)
+                // v114 melt: same dissolve as the album/playlist hero -
+                // the photo fades ITSELF out (sharp + blurred copies
+                // under one alpha mask, gone before the frame ends) and
+                // the page background gradient shows through. No opaque
+                // bottom colour, no seam.
+                Group {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img): img.resizable().scaledToFill()
+                        default: Color.white.opacity(0.3)
+                        }
                     }
-                }
-                .frame(width: w, height: 360)
-                .clipped()
-                // v113: blurred copy of the photo in the bottom band,
-                // same melt treatment as the album/playlist hero -
-                // the picture dissolves instead of ending.
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    default: Color.clear
+                    .frame(width: w, height: 360)
+                    .clipped()
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img): img.resizable().scaledToFill()
+                        default: Color.clear
+                        }
                     }
+                    .frame(width: w, height: 360)
+                    .clipped()
+                    .blur(radius: 28)
                 }
-                .frame(width: w, height: 360)
-                .clipped()
-                .blur(radius: 16)
-                .mask(
-                    LinearGradient(stops: [
-                        .init(color: .clear, location: 0.45),
-                        .init(color: .black, location: 0.90),
-                    ], startPoint: .top, endPoint: .bottom)
-                )
+                .mask(heroFadeMask)
             } else {
                 Color.white.opacity(0.3)
                     .frame(width: w, height: 360)
             }
+            // Top scrim (status bar) + a soft local scrim behind the
+            // artist name so white text survives light photos even
+            // after the photo has dissolved under it.
             LinearGradient(
                 stops: [
                     .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.85), location: 0.0),
                     .init(color: .clear, location: 0.18),
-                    .init(color: .clear, location: 0.34),
-                    .init(color: .black.opacity(0.30), location: 0.60),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.30), location: 0.70),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.60), location: 0.84),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.88), location: 0.94),
-                    .init(color: palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95), location: 1.0),
+                    .init(color: .clear, location: 0.52),
+                    .init(color: .black.opacity(0.28), location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom)
             Text(d.attributes?.name ?? "")
@@ -199,6 +198,20 @@ struct ArtistView: View {
         }
         .frame(width: w, height: 360)
         .clipped()
+    }
+
+    // Shared by the artist hero's still and motion branches: black
+    // until just above halfway, then a long ease to fully clear.
+    private var heroFadeMask: LinearGradient {
+        LinearGradient(stops: [
+            .init(color: .black, location: 0.0),
+            .init(color: .black, location: 0.36),
+            .init(color: .black.opacity(0.72), location: 0.56),
+            .init(color: .black.opacity(0.38), location: 0.71),
+            .init(color: .black.opacity(0.12), location: 0.82),
+            .init(color: .clear, location: 0.91),
+            .init(color: .clear, location: 1.0),
+        ], startPoint: .top, endPoint: .bottom)
     }
 
     private func mvCard(_ v: MVItem) -> some View {
