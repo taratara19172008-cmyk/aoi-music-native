@@ -138,15 +138,27 @@ struct NPWidgetView: View {
     // v114: the button IS the glyph - system glass clipped to the
     // symbol's own silhouette, no disc or ring around it. A white
     // gradient of the same glyph rides on top for legibility.
+    // glassEffect is iOS 26+; the widget target's deployment target is
+    // lower than the app's, so the glass layer needs an availability
+    // guard (build 16 failed without it). Her phone runs iOS 26, so
+    // the glass branch is always the one taken there; older systems
+    // just get the tinted glyph.
+    @ViewBuilder
+    private func glassGlyph(_ glyph: Image) -> some View {
+        if #available(iOS 26.0, *) {
+            Rectangle()
+                .fill(.white.opacity(0.001))
+                .glassEffect(.clear, in: .rect(cornerRadius: 2))
+                .mask { glyph }
+        }
+    }
+
     private func glassButton<I: AppIntent>(_ icon: String, intent: I) -> some View {
         let glyph = Image(systemName: icon)
             .font(.system(size: 24, weight: .bold))
         return Button(intent: intent) {
             ZStack {
-                Rectangle()
-                    .fill(.white.opacity(0.001))
-                    .glassEffect(.clear, in: .rect(cornerRadius: 2))
-                    .mask { glyph }
+                glassGlyph(glyph)
                 glyph
                     .foregroundStyle(
                         LinearGradient(colors: [.white.opacity(0.95), .white.opacity(0.55)],
@@ -173,7 +185,10 @@ struct AoiNowPlayingWidget: Widget {
 }
 
 // The app's theme colour, published into the group by the app.
-private func accentColor() -> Color {
+// Named widgetAccent, not accentColor: inside a View, the bare name
+// resolves to SwiftUI's View.accentColor member and fails to compile
+// (build 16 errors at the Shazam widget call sites).
+private func widgetAccent() -> Color {
     let hex = sharedDefaults()?.string(forKey: "accent_hex") ?? "#40c8e0"
     var v: UInt64 = 0
     let clean = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
@@ -192,8 +207,8 @@ struct ShazamWidgetView: View {
         ZStack {
             Image(systemName: "shazam.logo")
                 .font(.system(size: 62, weight: .semibold))
-                .foregroundStyle(accentColor())
-                .shadow(color: accentColor().opacity(0.45), radius: 12)
+                .foregroundStyle(widgetAccent())
+                .shadow(color: widgetAccent().opacity(0.45), radius: 12)
             VStack {
                 Spacer()
                 Text("听音识曲")
@@ -206,7 +221,7 @@ struct ShazamWidgetView: View {
         .containerBackground(for: .widget) {
             ZStack {
                 Rectangle().fill(.ultraThinMaterial)
-                LinearGradient(colors: [accentColor().opacity(0.28), .clear, accentColor().opacity(0.12)],
+                LinearGradient(colors: [widgetAccent().opacity(0.28), .clear, widgetAccent().opacity(0.12)],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
             }
         }
