@@ -13,6 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
+window.ENGINE_VERSION = '109.0';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -119,6 +120,15 @@ const mkPoll = setInterval(() => {
 
 setTimeout(() => { if (!music) post({ type: 'error', where: 'musickit', message: 'load timeout, script=' + window.__mkScript + ', global=' + (typeof window.MusicKit) }); }, 10000);
 
+function loadedQueueIds() {
+  try {
+    const items = (music && music.queue && music.queue.items) || [];
+    const out = [];
+    for (let i = 0; i < items.length; i++) out.push(String((items[i] && items[i].id) || ''));
+    return out;
+  } catch (e) { return []; }
+}
+
 window.AoiEngine = {
   async authorize() {
     if (!music) { post({ type: 'error', where: 'authorize', message: 'engine not ready' }); return; }
@@ -145,15 +155,37 @@ window.AoiEngine = {
       // Codex review's two adopted suggestions.)
       if (token !== queueReqToken) { post({ type: 'log', message: 'playQueue superseded, skipped' }); return; }
       const t0 = Date.now();
-      post({ type: 'log', message: 'playQueue start (' + ids.length + ' songs @' + start + ')' });
       appShuffle = sh; appRepeat = rp;
-      await music.setQueue({ songs: ids, startIndex: start });
+      // v109 jump-first: if the requested list IS the queue MusicKit
+      // already holds (same ids, same order) and shuffle is off, jump
+      // inside it instead of paying a full setQueue reload - the v108
+      // on-device diagnostics measured a setQueue settle at 9-55s,
+      // which is what made switching inside an album feel broken. The
+      // web app's player used the same trick. Any mismatch, shuffle
+      // being on, or a failed jump falls back to the full reload.
+      let jumped = false;
+      if (!sh) {
+        const cur = loadedQueueIds();
+        if (cur.length === ids.length && cur.every((v, i) => v === String(ids[i]))) {
+          try {
+            await music.changeToMediaAtIndex(start);
+            jumped = true;
+            post({ type: 'log', message: 'playQueue: same queue, jump to ' + start });
+          } catch (e) {
+            post({ type: 'log', message: 'same-queue jump failed, reloading: ' + String((e && e.message) || e) });
+          }
+        }
+      }
+      if (!jumped) {
+        post({ type: 'log', message: 'playQueue start (' + ids.length + ' songs @' + start + ')' });
+        await music.setQueue({ songs: ids, startIndex: start });
+      }
       // Apply the CAPTURED modes, not the globals: setShuffle/setRepeat
       // may have run during the await and rewritten the globals (the
       // residual race the Codex review caught in round 2).
       music.shuffleMode = sh ? 1 : 0;
       music.repeatMode = mkRepeat(rp);
-      if (start > 0) {
+      if (!jumped && start > 0) {
         try { await music.changeToMediaAtIndex(start); }
         catch (e) { post({ type: 'log', message: 'jump after setQueue failed: ' + String((e && e.message) || e) }); }
       }

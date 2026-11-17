@@ -20,6 +20,8 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     @Published var userToken = ""
     @Published var lastError = ""
     @Published var pageLoaded = false
+    @Published var engineVersion = ""
+    @Published var engineSource = ""
     private var pendingAuthorize = false
     private var probeTimer: Timer?
     private var lastProbe = ""
@@ -53,10 +55,25 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         ucc.add(self, name: "aoi")
         webView.uiDelegate = self
         webView.navigationDelegate = self
-        if let fileURL = Bundle.main.url(forResource: "engine", withExtension: "html"),
-           let html = try? String(contentsOf: fileURL, encoding: .utf8) {
-            webView.loadHTMLString(html, baseURL: Self.engineBaseURL)
+        // v109: load the newest engine available - the online-updated
+        // cache if one was downloaded, else the bundled page - always
+        // through the same loadHTMLString + music.apple.com base URL
+        // the login depends on, then refresh the cache in the
+        // background for the next launch.
+        let bundled = Bundle.main.url(forResource: "engine", withExtension: "html")
+            .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+        let html: String
+        if let cached = Self.cachedEngineHTML(), Self.isValidEngineHTML(cached) {
+            html = cached
+            engineSource = "在线更新"
+        } else {
+            html = bundled
+            engineSource = "内置"
         }
+        engineVersion = Self.parseEngineVersion(html)
+        webView.loadHTMLString(html, baseURL: Self.engineBaseURL)
+        logEvent("engine v" + engineVersion + " (" + engineSource + ")")
+        fetchEngineUpdate(currentHTML: html)
         probeTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in self?.probe() }
     }
 
@@ -72,6 +89,48 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
             else { text = "probe: nil result" }
             if text != self.lastProbe { self.lastProbe = text; self.logEvent(text) }
         }
+    }
+
+    // MARK: - Engine online update (v109)
+    // The playback engine is an HTML/JS page; iOS forbids downloading
+    // native code, but a web engine may refresh itself. At launch the
+    // bridge loads the newest cached copy (bundle as fallback) and
+    // fetches the repo's latest engine.html in the background; a newer
+    // copy applies on the NEXT launch, so playback fixes ship without
+    // reinstalling the app.
+    private static let engineRemoteURL = URL(string: "https://raw.githubusercontent.com/taratara19172008-cmyk/aoi-music-native/main/AoiMusic/engine.html")!
+    private static func engineCacheURL() -> URL? {
+        guard let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        return dir.appendingPathComponent("engine-cache.html")
+    }
+    private static func cachedEngineHTML() -> String? {
+        guard let url = engineCacheURL() else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }
+    private static func isValidEngineHTML(_ s: String) -> Bool {
+        s.contains("window.AoiEngine") && s.contains("AOI_CONFIG") && s.contains("ENGINE_VERSION")
+    }
+    private static func parseEngineVersion(_ html: String) -> String {
+        guard let r = html.range(of: "ENGINE_VERSION = '") else { return "?" }
+        let rest = html[r.upperBound...]
+        guard let end = rest.firstIndex(of: "'") else { return "?" }
+        return String(rest[..<end])
+    }
+    private func fetchEngineUpdate(currentHTML: String) {
+        var req = URLRequest(url: Self.engineRemoteURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        URLSession.shared.dataTask(with: req) { [weak self] data, response, _ in
+            guard let self, let data,
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  let s = String(data: data, encoding: .utf8),
+                  Self.isValidEngineHTML(s), s != currentHTML,
+                  let url = Self.engineCacheURL() else { return }
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if (try? data.write(to: url, options: .atomic)) != nil {
+                let v = Self.parseEngineVersion(s)
+                DispatchQueue.main.async { self.logEvent("engine update v" + v + " downloaded, applies next launch") }
+            }
+        }.resume()
     }
 
     // MARK: - JS -> Swift
@@ -115,7 +174,12 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     // MARK: - Swift -> JS
     private func call(_ js: String) {
         DispatchQueue.main.async { [weak self] in
-            self?.webView.evaluateJavaScript(js) { [weak self] _, err in
+            // void(): engine methods return Promises, and evaluateJavaScript
+            // cannot bridge a Promise result - it reported "unsupported
+            // type" for every transport call and drowned the v108
+            // diagnostics in noise. The commands always executed; only
+            // the result value was unreturnable. Discard it explicitly.
+            self?.webView.evaluateJavaScript("void (" + js + ")") { [weak self] _, err in
                 if let err = err { self?.logEvent("call failed: " + err.localizedDescription) }
             }
         }
