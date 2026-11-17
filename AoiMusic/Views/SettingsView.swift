@@ -199,8 +199,6 @@ struct SettingsView: View {
     private var engineDiag: String {
         var s = "Engine ready: \(engine.ready ? "yes" : "no") · Page loaded: \(engine.pageLoaded ? "yes" : "no")"
         s += "\n引擎版本: v" + engine.engineVersion + "（" + engine.engineSource + "）"
-        s += "\n播放引擎: v" + (player.playback.engineVersion.isEmpty ? "?" : player.playback.engineVersion) + (player.playback.ready ? " · ready" : " · 未就绪") + (player.playback.authorized ? " · 已授权" : "")
-        if !player.playback.lastError.isEmpty { s += "\n" + player.playback.lastError }
         if !engine.lastError.isEmpty { s += "\n" + engine.lastError }
         // Widget data channel (v108): the now-playing widget reads through
         // the app group; if the sideload signature dropped the group, this
