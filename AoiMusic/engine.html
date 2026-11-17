@@ -13,7 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.10';
+window.ENGINE_VERSION = '109.11';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -398,9 +398,35 @@ function completeQueueInBackground(rest, targetId, gen) {
     if (!completionStale(gen, targetId)) post({ type: 'log', message: 'queue completed in background (' + loadedQueueIds().length + ' songs)' });
   })().catch(() => {});
 }
+// v109.11 (GPT option D, verified against the MusicKit v3 source):
+// when Swift hands over the tapped song's full API resource, queue
+// it via the {items:[resource]} form - convertToItemDescriptors
+// turns a media-API resource into a descriptor carrying `data`,
+// and loadResources then SKIPS the catalog fetch for it entirely.
+// (The {songs:[...]} form cannot do this: its entries are mapped
+// to {id: entry} verbatim, so an object would become the id.)
+// Any failure falls back to the id form with its drop protection.
+// Kill switch: localStorage 'aoi-dataq' = '0'.
+function dataFormEnabled() {
+  try { return localStorage.getItem('aoi-dataq') !== '0'; } catch (e) { return true; }
+}
+async function setQueueTarget(win, targetId, resource) {
+  if (resource && dataFormEnabled() && String(resource.id) === targetId &&
+      typeof resource.type === 'string' && resource.attributes) {
+    try {
+      await mutate(() => music.setQueue({ items: [resource], startPlaying: true }));
+      return { kept: [targetId], via: 'data' };
+    } catch (e) {
+      post({ type: 'log', message: 'playQueue: data-form setQueue failed (' + String((e && e.message) || e) + '), falling back to ids' });
+    }
+  }
+  const res = await setQueueDroppingBad(win, targetId);
+  if (res) res.via = 'ids';
+  return res;
+}
 // Shared by playQueue and jumpTo: head window in + play, rest later.
 // Returns false only when the target itself is unavailable.
-async function startRotated(rotatedAll, targetId, gen) {
+async function startRotated(rotatedAll, targetId, gen, resource) {
   const tQ = Date.now();
   const win = rotatedAll.slice(0, HEAD_WINDOW);
   // v109.10: pure observer - if setQueue is still pending after 20s
@@ -409,11 +435,11 @@ async function startRotated(rotatedAll, targetId, gen) {
   // arrives late, which the 1s heartbeat will already have shown.
   const slowTimer = setTimeout(() => post({ type: 'log', message: 'setQueue still pending after 20s (target ' + targetId + ')' }), 20000);
   let res = null;
-  try { res = await setQueueDroppingBad(win, targetId); }
+  try { res = await setQueueTarget(win, targetId, resource); }
   finally { clearTimeout(slowTimer); }
   if (!res) return false;
   queueSignature = appQueueIds.join(',');
-  post({ type: 'log', message: 'setQueue settled in ' + (Date.now() - tQ) + 'ms (head window ' + res.kept.length + ' of ' + rotatedAll.length + ')' });
+  post({ type: 'log', message: 'setQueue settled in ' + (Date.now() - tQ) + 'ms (head window ' + res.kept.length + ' of ' + rotatedAll.length + ', via ' + (res.via || 'ids') + ')' });
   const tPlay = Date.now();
   const pr = await bounded(music.play(), playTimeoutMs());
   if (pr.timeout) post({ type: 'log', message: 'play TIMED OUT after ' + (Date.now() - tPlay) + 'ms (left running, chain unwedged)' });
@@ -457,12 +483,16 @@ window.AoiEngine = {
     try { await music.unauthorize(); } catch (e) {}
     sendAuth();
   },
-  playQueue(ids, startIndex, shuffle, repeat) {
+  playQueue(ids, startIndex, shuffle, repeat, targetData) {
     if (!music || !ids || !ids.length) return;
     // Modes are captured at CALL time: the op may run later, and a newer
     // call's settings must not leak into an older queued operation.
     const sh = !!shuffle, rp = repeat | 0, start = startIndex | 0;
     const seq = ++queueReqSeq;
+    // v109.11: the tapped song's full resource (JSON string from
+    // Swift), parsed at call time like the modes above.
+    let tData = null;
+    if (targetData) { try { tData = typeof targetData === 'string' ? JSON.parse(targetData) : targetData; } catch (e) { tData = null; } }
     return op(async () => {
       // Coalescing: if a NEWER playQueue was requested while this one
       // waited its turn, skip it - only the latest queue matters.
@@ -505,7 +535,7 @@ window.AoiEngine = {
       music.repeatMode = mkRepeat(rp);
       // v109.9: tapped song first, the rest of the queue lands in
       // the background (see startRotated).
-      const okStart = await startRotated(rotated, targetId, token);
+      const okStart = await startRotated(rotated, targetId, token, tData);
       if (okStart) queueOffset = start;
       post({ type: 'log', message: 'playQueue settled in ' + (Date.now() - t0) + 'ms' });
     }).catch(e => reportErr('playQueue', e));
