@@ -13,11 +13,65 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.2';
+window.ENGINE_VERSION = '109.3';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
 let music = null;
+
+// ---------- v109.3: relay layer (the web app's fast path, no SW) ----------
+// The web app in Safari is instant on this same phone; the bundled
+// engine crawls and degrades (setQueue settle 9-55s, worsening per
+// track). Their playback code is the same shape - what differs is the
+// network path: the web app's service worker reroutes every
+// *.music.apple.com request (MusicKit's own included) through the
+// relay, while this engine called Apple direct. A service worker can
+// never control a WKWebView page (verified on device in the v110
+// experiments: swctl=false), so do the SW's job at the fetch/XHR
+// layer instead - the v110.5 tap proved MusicKit's catalog calls go
+// through window.fetch and come back fast via the relay. Rules mirror
+// sw.js exactly: *.music.apple.com only, js-cdn excluded (public
+// static file), never rewrite a URL already aimed at the relay.
+(function installRelay() {
+  const relayBase = (window.AOI_CONFIG && window.AOI_CONFIG.relayBase) || '';
+  if (!relayBase) return;
+  const hostRe = /(^|\.)music\.apple\.com$/;
+  function relayURL(raw) {
+    try {
+      const u = new URL(raw, location.href);
+      if (!hostRe.test(u.hostname)) return null;
+      if (u.hostname === 'js-cdn.music.apple.com') return null;
+      if (String(raw).indexOf(relayBase) === 0) return null;
+      return relayBase + '?target=' + encodeURIComponent(u.href);
+    } catch (e) { return null; }
+  }
+  if (typeof window.fetch === 'function') {
+    const origFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      try {
+        const raw = (typeof input === 'string') ? input : ((input && input.url) || '');
+        const target = raw ? relayURL(raw) : null;
+        if (target) {
+          if (typeof input === 'string' || !input) return origFetch(target, init);
+          const ni = { method: input.method, headers: input.headers, redirect: 'follow' };
+          if (input.method !== 'GET' && input.method !== 'HEAD') {
+            return input.clone().arrayBuffer().then(body => { ni.body = body; return origFetch(target, ni); });
+          }
+          return origFetch(target, ni);
+        }
+      } catch (e) {}
+      return origFetch(input, init);
+    };
+  }
+  if (window.XMLHttpRequest && XMLHttpRequest.prototype && XMLHttpRequest.prototype.open) {
+    const origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function () {
+      try { const t = relayURL(arguments[1]); if (t) arguments[1] = t; } catch (e) {}
+      return origOpen.apply(this, arguments);
+    };
+  }
+  post({ type: 'log', message: 'relay layer on' });
+})();
 // ---------- playback core (v108: the web app's proven shape) ----------
 // v105-v107 wrapped MusicKit in an adversarial control system: per-call
 // timeouts, target verification with forced re-jumps, a stall watchdog,

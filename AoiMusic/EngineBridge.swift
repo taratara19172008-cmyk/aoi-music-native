@@ -43,7 +43,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     private var popupVC: UIViewController?
     private var popupWebView: WKWebView?
 
-    init() {
+    override init() {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
@@ -262,6 +262,18 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         if (error as NSError).code == NSURLErrorCancelled { return }
         logEvent("page load failed: " + error.localizedDescription)
+    }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // v111: a non-visible webview's WebContent process is a prime
+        // candidate for termination under memory pressure; without a
+        // handler the engine would sit dead (or half-dead) until the
+        // app is relaunched. Reload is the platform's prescribed
+        // recovery; the probe timer and authorize queue pick up from
+        // the reloaded page's boot/ready messages.
+        logEvent("web content process terminated, reloading engine")
+        ready = false
+        pageLoaded = false
+        webView.reload()
     }
     private static func topPresenter() -> UIViewController? {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
