@@ -13,6 +13,7 @@ struct CollectionView: View {
     @State private var tracks: [Song] = []
     @State private var loaded = false
     @State private var palette: CoverPalette?
+    @State private var showAddSongs = false
     @State private var motionURLStr: String?
     @State private var addSong: Song?
     @State private var shareItem: ShareItem?
@@ -48,6 +49,18 @@ struct CollectionView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { nav.detail = nil }
                     Spacer()
+                    // v114: her own playlists get a glass + button to
+                    // add songs from recents / loved / favorite albums.
+                    if kind == "lplaylist" {
+                        Image(systemName: "plus")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .aoiGlass(corner: 20, interactive: true)
+                            .contentShape(Rectangle())
+                            .onTapGesture { showAddSongs = true }
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 10)
@@ -105,6 +118,12 @@ struct CollectionView: View {
         .environment(\.colorScheme, palette?.isDark == true ? .dark : .light)
         .task { await load() }
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
+        .sheet(isPresented: $showAddSongs) {
+            AddSongsSheet(playlistId: id,
+                          existing: Set(tracks.map { $0.id } + tracks.map { $0.playbackId })) { added in
+                tracks.append(contentsOf: added)
+            }
+        }
         .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
         .alert(settings.t("edit_name"), isPresented: $showRename) {
             TextField(settings.t("playlist_name_ph"), text: $renameText)
@@ -215,36 +234,45 @@ struct CollectionView: View {
     private var heroArtwork: some View {
         let w = UIScreen.main.bounds.width
         ZStack {
-            if let m = motionURLStr, let u = URL(string: m) {
-                LoopingVideo(url: u)
-                    .frame(width: w, height: w)
-            } else {
-                ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
-                // v113: a blurred copy of the cover itself in the
-                // bottom band - the photo's own pixels dissolve
-                // before the colour melt takes over, so no edge of
-                // the image survives anywhere.
-                ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
-                    .blur(radius: 16)
-                    .mask(
-                        LinearGradient(stops: [
-                            .init(color: .clear, location: 0.42),
-                            .init(color: .black, location: 0.85),
-                        ], startPoint: .top, endPoint: .bottom)
-                    )
+            // v114 melt: the artwork itself dissolves. One shared alpha
+            // mask fades the sharp and blurred copies out together,
+            // starting above the halfway point and reaching fully
+            // transparent before the frame ends - what shows through is
+            // the page's own background gradient, so no painted-over
+            // bottom colour and no seam line anywhere. (v113 painted
+            // palette.bottom OVER the image while the page gradient
+            // below was only mid-blend at that height: a guaranteed
+            // step at the boundary.)
+            Group {
+                if let m = motionURLStr, let u = URL(string: m) {
+                    LoopingVideo(url: u)
+                        .frame(width: w, height: w)
+                } else {
+                    ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
+                    ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
+                        .blur(radius: 28)
+                }
             }
-            // Long multi-stop melt (v107): the page-bottom colour is the
-            // cover's own bottom-edge colour, and it seeps in gradually
-            // from the halfway point — no visible seam where image ends.
+            .mask(
+                LinearGradient(stops: [
+                    .init(color: .black, location: 0.0),
+                    .init(color: .black, location: 0.38),
+                    .init(color: .black.opacity(0.72), location: 0.58),
+                    .init(color: .black.opacity(0.38), location: 0.72),
+                    .init(color: .black.opacity(0.12), location: 0.83),
+                    .init(color: .clear, location: 0.92),
+                    .init(color: .clear, location: 1.0),
+                ], startPoint: .top, endPoint: .bottom)
+            )
+            // Top scrim only (status-bar legibility), plus a whisper of
+            // the cover's bottom colour that never reaches opacity -
+            // it can tint the dissolve, never draw an edge.
             LinearGradient(
                 stops: [
                     .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.85), location: 0.0),
                     .init(color: .clear, location: 0.16),
-                    .init(color: .clear, location: 0.40),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.22), location: 0.58),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.50), location: 0.74),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.82), location: 0.88),
-                    .init(color: palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95), location: 1.0),
+                    .init(color: .clear, location: 0.55),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.18), location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom)
         }
