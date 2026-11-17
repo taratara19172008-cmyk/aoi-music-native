@@ -61,12 +61,21 @@ const music = {
   _listeners: {},
   // scripting knobs for the tests
   unresolvable: new Set(), jumpAbortTimes: 0, jumpLie: false,
-  jumpHang: false, playHang: false, jumpCalls: 0,
+  jumpHang: false, playHang: false, jumpCalls: 0, dataFormFails: false,
   playCalls: 0, setQueueCalls: [], playLaterCalls: [], appendCalls: 0, playLaterGate: null,
   addEventListener(n, f) { (this._listeners[n] = this._listeners[n] || []).push(f); },
   async authorize() { return 'tok'; },
   async setQueue(opts) {
     this.setQueueCalls.push(opts);
+    if (opts.items) {
+      // v109.11 data form: resources arrive preloaded, NO catalog fetch.
+      if (this.dataFormFails) throw new Error('data form rejected by fake');
+      this.queue.items = opts.items.map(r => ({ id: String(r.id) }));
+      this.queue.position = 0;
+      this.nowPlayingItem = this.queue.items[0] || null;
+      if (opts.startPlaying) this.isPlaying = true;
+      return;
+    }
     await sandbox.fetch('https://api.music.apple.com/v1/catalog/cn/songs?ids=' + (opts.songs || []).join(','));
     const bad = (opts.songs || []).map(String).filter(id => this.unresolvable.has(id));
     if (bad.length) throw new Error('could not be resolved: ' + bad.join(', '));
@@ -101,7 +110,7 @@ const music = {
     this.unresolvable = new Set(); this.jumpAbortTimes = 0; this.jumpLie = false;
     this.jumpHang = false; this.playHang = false; this.jumpCalls = 0;
     this.playCalls = 0; this.setQueueCalls = []; this.isPlaying = false;
-    this.playLaterCalls = []; this.appendCalls = 0; this.playLaterGate = null;
+    this.playLaterCalls = []; this.appendCalls = 0; this.playLaterGate = null; this.dataFormFails = false;
     posts.length = 0;
   },
 };
@@ -314,6 +323,27 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
   music.reset();
   await sandbox.AoiEngine.jumpTo(0);
   check('jumpTo no queue: changeToMediaAtIndex NOT called, error posted', music.jumpCalls === 0 && errPosts().some(p => p.where === 'jumpTo'));
+
+  // ---- v109.11: data form skips the catalog fetch for the target ----
+  music.reset();
+  const fetchesBefore = rawFetchCalls.length;
+  const res111 = JSON.stringify({ id: '111', type: 'songs', attributes: { name: 'X', playParams: { id: '111', kind: 'song' } } });
+  await sandbox.AoiEngine.playQueue(['111', '222', '333'], 0, false, 0, res111);
+  await new Promise(r => setTimeout(r, 60));
+  check('data form: setQueue used items form, queue completed by ids', !!music.setQueueCalls[0].items && music.setQueueCalls[0].songs === undefined && JSON.stringify(music.queue.items.map(x => x.id)) === '["111","222","333"]' && logHas(/via data/));
+  check('data form: NO catalog fetch happened for the target', !rawFetchCalls.slice(fetchesBefore).some(u => String(u.url || u).includes('ids=111')));
+
+  // ---- v109.11: data form failure falls back to the id form ----
+  music.reset(); music.dataFormFails = true;
+  await sandbox.AoiEngine.playQueue(['111', '222'], 0, false, 0, res111);
+  await new Promise(r => setTimeout(r, 60));
+  check('data form failure: fell back to ids and plays', music.setQueueCalls.length === 2 && JSON.stringify(music.setQueueCalls[1].songs) === '["111"]' && music.nowPlayingItem.id === '111' && logHas(/falling back to ids/));
+
+  // ---- v109.11: a resource for a DIFFERENT song is ignored ----
+  music.reset();
+  const resOther = JSON.stringify({ id: '999', type: 'songs', attributes: { name: 'Y' } });
+  await sandbox.AoiEngine.playQueue(['111', '222'], 0, false, 0, resOther);
+  check('mismatched resource: id form used', JSON.stringify(music.setQueueCalls[0].songs) === '["111"]' && music.setQueueCalls[0].items === undefined);
 
   console.log(fails ? ('\n' + fails + ' FAILURES') : '\nALL PASS');
   process.exit(fails ? 1 : 0);
