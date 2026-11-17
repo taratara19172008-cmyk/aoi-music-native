@@ -13,7 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.5';
+window.ENGINE_VERSION = '109.6';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -188,26 +188,6 @@ function parseUnresolved(e) {
   return m[1].split(',').map(s => s.trim()).filter(Boolean);
 }
 
-function queuePosition() {
-  try {
-    const p = music && music.queue && music.queue.position;
-    return (typeof p === 'number' && isFinite(p)) ? p : -1;
-  } catch (e) { return -1; }
-}
-// Is the player verifiably sitting on index i of id list `ids`?
-// true/false when MusicKit can tell us, null when it cannot.
-function atTarget(i, ids) {
-  const pos = queuePosition();
-  if (pos >= 0) return pos === i;
-  try {
-    const it = music && music.nowPlayingItem;
-    const curId = it ? String(it.id || '') : '';
-    const want = (ids && ids[i] != null) ? String(ids[i]) : '';
-    if (curId && want) return curId === want;
-  } catch (e) {}
-  return null;
-}
-
 // ---------- v109.5: bounded waits (anti-wedge) ----------
 // On device (2026-11-17 17:27/17:29 diagnostics) a track SWITCH can
 // leave changeToMediaAtIndex pending forever: the serial op chain
@@ -233,20 +213,11 @@ function bounded(promise, ms) {
     );
   });
 }
-// One changeToMediaAtIndex with a bounded wait and a timing log.
-// Returns 'ok' | 'error' | 'timeout'.
-async function tryJump(i, label) {
-  const t = Date.now();
-  const r = await bounded(music.changeToMediaAtIndex(i), jumpTimeoutMs());
-  const ms = Date.now() - t;
-  if (r.ok) { post({ type: 'log', message: label + ' settled in ' + ms + 'ms' }); return 'ok'; }
-  if (r.timeout) { post({ type: 'log', message: label + ' TIMED OUT after ' + ms + 'ms (call left running, no longer blocking)' }); return 'timeout'; }
-  post({ type: 'log', message: label + ' failed: ' + String((r.error && r.error.message) || r.error) });
-  return 'error';
-}
-// After a recovery rotation the engine's queue is the app list rotated
-// by this many positions; jumpTo indices from the app are compensated.
+// The engine's queue is the app list rotated so the tapped song sits
+// at the head; queueOffset is that song's index in the app list, and
+// appQueueIds is the app list itself (original order) for jumpTo.
 let queueOffset = 0;
+let appQueueIds = [];
 
 window.AoiEngine = {
   async authorize() {
@@ -273,131 +244,50 @@ window.AoiEngine = {
       const t0 = Date.now();
       appShuffle = sh; appRepeat = rp;
       const targetId = String(ids[start]);
-      // v109 jump-first: if the requested list IS the queue MusicKit
-      // already holds (same ids, same order) and shuffle is off, jump
-      // inside it instead of paying a full setQueue reload.
-      let jumped = false;
-      if (!sh) {
-        const cur = loadedQueueIds();
-        if (cur.length === ids.length && cur.every((v, i) => v === String(ids[i]))) {
-          let jumpErr = null, jumpTimedOut = false;
-          for (let j = 0; j < 2 && !jumped; j++) {
-            const r = await tryJump(start, 'jump to ' + start);
-            if (r === 'ok') jumped = true;
-            else if (r === 'timeout') { jumpTimedOut = true; break; }
-            else jumpErr = true;
-          }
-          // v109.2: an ABORTED jump must not escalate into a full
-          // setQueue reload (one interrupted jump became an 81s
-          // reload on device). If the queue is still exactly this
-          // list, excuse the abort - but v109.5: a TIMEOUT is not an
-          // abort; the jump may simply never land, so reload.
-          if (!jumped && jumpErr && !jumpTimedOut) {
-            const cur2 = loadedQueueIds();
-            if (cur2.length === ids.length && cur2.every((v, i) => v === String(ids[i]))) {
-              jumped = true;
-              post({ type: 'log', message: 'jump aborted, queue intact - skipping reload' });
-            }
-          }
-          if (jumped) {
-            // v109.4: a jump that verifiably did NOT land on the
-            // target is not a jump at all. Reload instead.
-            if (atTarget(start, ids) === false) {
-              jumped = false;
-              post({ type: 'log', message: 'jump did not land on target (position ' + queuePosition() + ' != ' + start + '), reloading' });
-            } else {
-              queueOffset = 0;
-              post({ type: 'log', message: 'playQueue: same queue, jump to ' + start + ' done' });
-            }
-          }
-          if (!jumped && jumpErr) {
-            post({ type: 'log', message: 'same-queue jump failed, reloading' });
-          }
-        }
+      appQueueIds = ids.map(String);
+      // v109.6: rotation is the ONLY tap path. On device,
+      // changeToMediaAtIndex in this webview aborts, crawls (~5s) or
+      // hangs outright (>10s twice in a row, 2026-11-17 17:42 log) -
+      // while setQueue with the target rotated to the head +
+      // startPlaying has completed in EVERY on-device session. So a
+      // tap never jumps: it re-queues the list rotated, target first.
+      // Next/prev follow the rotated queue cyclically (same order);
+      // jumpTo re-rotates by id.
+      if (music.nowPlayingItem && String(music.nowPlayingItem.id) === targetId) {
+        const pr0 = await bounded(music.play(), playTimeoutMs());
+        post({ type: 'log', message: 'playQueue: target already loaded, play ' + (pr0.timeout ? 'TIMED OUT' : pr0.ok ? 'settled' : 'failed') + ', total ' + (Date.now() - t0) + 'ms' });
+        return;
       }
-      let playIndex = start;
-      let attemptIds = ids.slice();
-      if (!jumped) {
-        // v109.4: when the target is the head of the queue, let
-        // setQueue start playback itself (startPlaying) instead of a
-        // separate play() round. Only at index 0: starting playback
-        // at the head and THEN jumping would briefly play wrong.
-        const useStartPlaying = playIndex === 0;
-        post({ type: 'log', message: 'playQueue start (' + ids.length + ' songs @' + start + (useStartPlaying ? ', startPlaying' : '') + ')' });
-        const tQ = Date.now();
-        // v109.1 drop-and-retry: MusicKit rejects the WHOLE setQueue
-        // when even one id cannot be resolved in this storefront.
-        // Drop the named ids and retry - UNLESS the dropped id is
-        // the song she actually tapped (v109.4): then stop and say
-        // so, never substitute a neighbour silently.
-        for (let attempt = 0; ; attempt++) {
-          try {
-            const desc = { songs: attemptIds, startIndex: playIndex };
-            if (useStartPlaying) desc.startPlaying = true;
-            await music.setQueue(desc);
-            break;
-          } catch (e) {
-            const bad = parseUnresolved(e);
-            if (!bad.length || attempt >= 3) throw e;
-            if (bad.indexOf(targetId) >= 0) {
-              post({ type: 'log', message: 'playQueue: target song ' + targetId + ' unavailable in this storefront, not playing a substitute' });
-              post({ type: 'error', where: 'playQueue', message: 'target unavailable: ' + targetId });
-              return;
-            }
-            let removedBefore = 0;
-            const kept = [];
-            for (let i = 0; i < attemptIds.length; i++) {
-              if (bad.indexOf(String(attemptIds[i])) >= 0) { if (i < playIndex) removedBefore++; }
-              else kept.push(attemptIds[i]);
-            }
-            if (kept.length === attemptIds.length || !kept.length) throw e;
-            post({ type: 'log', message: 'playQueue: dropped unresolvable ' + bad.join(', ') + ', retrying with ' + kept.length });
-            attemptIds = kept;
-            playIndex = Math.max(0, playIndex - removedBefore);
-            if (playIndex >= attemptIds.length) playIndex = attemptIds.length - 1;
-          }
-        }
-        queueOffset = 0;
-        post({ type: 'log', message: 'setQueue settled in ' + (Date.now() - tQ) + 'ms' });
-      }
-      // Apply the CAPTURED modes, not the globals.
+      let rotated = ids.slice(start).concat(ids.slice(0, start)).map(String);
+      post({ type: 'log', message: 'playQueue start (' + ids.length + ' songs @' + start + ', rotated)' });
+      // Modes BEFORE setQueue: startPlaying begins inside it.
       music.shuffleMode = sh ? 1 : 0;
       music.repeatMode = mkRepeat(rp);
-      if (!jumped && playIndex > 0) {
-        // Reach the target BEFORE playing, verified (v109.4) and
-        // bounded (v109.5): retry the jump once; if it will not land
-        // - error, timeout, or verifiably elsewhere - recover by
-        // rebuilding the queue rotated so the target sits at the
-        // head and starts there. The head-start is the one path that
-        // has worked in every on-device session.
-        let ok = false;
-        for (let j = 0; j < 2 && !ok; j++) {
-          const r = await tryJump(playIndex, 'jump after setQueue to ' + playIndex);
-          if (r === 'ok') ok = true;
-        }
-        if (!sh) {
-          const at = atTarget(playIndex, attemptIds);
-          if (at === true) ok = true;
-          if (at === false) ok = false;
-        }
-        if (!ok) {
-          if (sh) {
-            post({ type: 'log', message: 'target index ' + playIndex + ' not reached under shuffle - refusing to play the wrong song' });
-            post({ type: 'error', where: 'playQueue', message: 'target index not reached' });
+      const tQ = Date.now();
+      // Drop-and-retry (v109.1): MusicKit rejects the WHOLE setQueue
+      // when one id cannot be resolved in this storefront. Drop the
+      // named ids and retry - UNLESS the dropped id is the tapped
+      // song itself (v109.4): then stop and say so, never substitute.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await music.setQueue({ songs: rotated, startIndex: 0, startPlaying: true });
+          break;
+        } catch (e) {
+          const bad = parseUnresolved(e);
+          if (!bad.length || attempt >= 3) throw e;
+          if (bad.indexOf(targetId) >= 0) {
+            post({ type: 'log', message: 'playQueue: target song ' + targetId + ' unavailable in this storefront, not playing a substitute' });
+            post({ type: 'error', where: 'playQueue', message: 'target unavailable: ' + targetId });
             return;
           }
-          const rotated = attemptIds.slice(playIndex).concat(attemptIds.slice(0, playIndex));
-          post({ type: 'log', message: 'jump would not land - recovering with rotated queue (target at head, offset ' + playIndex + ')' });
-          try {
-            await music.setQueue({ songs: rotated, startIndex: 0, startPlaying: true });
-            queueOffset = playIndex;
-          } catch (e) {
-            post({ type: 'log', message: 'rotation recovery failed: ' + String((e && e.message) || e) });
-            post({ type: 'error', where: 'playQueue', message: 'target index not reached' });
-            return;
-          }
+          const kept = rotated.filter(id => bad.indexOf(id) < 0);
+          if (kept.length === rotated.length || !kept.length) throw e;
+          post({ type: 'log', message: 'playQueue: dropped unresolvable ' + bad.join(', ') + ', retrying with ' + kept.length });
+          rotated = kept;
         }
       }
+      queueOffset = start;
+      post({ type: 'log', message: 'setQueue settled in ' + (Date.now() - tQ) + 'ms' });
       const tPlay = Date.now();
       const pr = await bounded(music.play(), playTimeoutMs());
       if (pr.timeout) post({ type: 'log', message: 'play TIMED OUT after ' + (Date.now() - tPlay) + 'ms (left running, chain unwedged)' });
@@ -421,11 +311,31 @@ window.AoiEngine = {
   jumpTo(i) {
     if (!music) return;
     return op(async () => {
-      // Compensate a recovery rotation: the app speaks in its own
-      // list indices, the engine queue may be rotated by queueOffset.
-      const len = loadedQueueIds().length;
-      const idx = len > 0 ? (((i | 0) - queueOffset) % len + len) % len : (i | 0);
-      await tryJump(idx, 'jumpTo ' + (i | 0));
+      // v109.6: no changeToMediaAtIndex (see playQueue). Re-rotate the
+      // engine's current queue so the tapped song is at the head.
+      const targetId = appQueueIds[i | 0];
+      const cur = loadedQueueIds();
+      if (!targetId || !cur.length) {
+        const r = await bounded(music.changeToMediaAtIndex(i | 0), jumpTimeoutMs());
+        post({ type: 'log', message: 'jumpTo fallback (no known queue): ' + (r.timeout ? 'TIMED OUT' : r.ok ? 'settled' : 'failed') });
+        return;
+      }
+      if (music.nowPlayingItem && String(music.nowPlayingItem.id) === targetId) {
+        await bounded(music.play(), playTimeoutMs());
+        return;
+      }
+      const pos = cur.indexOf(targetId);
+      if (pos < 0) { post({ type: 'log', message: 'jumpTo: target ' + targetId + ' not in engine queue' }); return; }
+      const rotated = cur.slice(pos).concat(cur.slice(0, pos));
+      try {
+        await music.setQueue({ songs: rotated, startIndex: 0, startPlaying: true });
+        queueOffset = i | 0;
+        post({ type: 'log', message: 'jumpTo ' + (i | 0) + ': rotated queue, target at head' });
+      } catch (e) {
+        post({ type: 'log', message: 'jumpTo rotation failed: ' + String((e && e.message) || e) });
+        return;
+      }
+      await bounded(music.play(), playTimeoutMs());
     }).catch(() => {});
   },
   seek(sec) { if (music) { try { music.seekToTime(Number(sec) || 0); } catch (e) {} } },
