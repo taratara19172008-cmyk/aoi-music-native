@@ -46,12 +46,7 @@ struct FavoritesView: View {
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 4)
                         } else {
-                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                                ForEach(player.favAlbums) { a in
-                                    CollectionCard(item: a, width: 0, onOpenCard: { nav.detail = .collection(kind: "album", id: a.id) })
-                                }
-                            }
-                            .padding(.top, 4)
+                            albumRail(player.favAlbums)
                         }
                     }
                 }
@@ -69,6 +64,56 @@ struct FavoritesView: View {
             if now { Task { await load() } }
         }
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
+    }
+
+    private var colW: CGFloat { UIScreen.main.bounds.width - 100 }
+
+    // v113: favorite albums ride the same deterministic 3-row rail
+    // as the Library (her standing layout for collections) instead
+    // of the old two-column grid.
+    private func albumRail(_ albums: [CollectionItem]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(Array(stride(from: 0, to: albums.count, by: 3)), id: \.self) { start in
+                    VStack(spacing: 8) {
+                        ForEach(albums[start..<min(start + 3, albums.count)]) { a in
+                            albumRow(a)
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func albumRow(_ a: CollectionItem) -> some View {
+        HStack(spacing: 10) {
+            ArtworkImage(urlString: a.art(120, 120), size: 46, corner: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                MarqueeText(text: a.title,
+                            font: .subheadline.weight(.medium),
+                            uiFont: .systemFont(ofSize: 15, weight: .medium))
+                if !a.sub.isEmpty {
+                    MarqueeText(text: a.sub,
+                                font: .caption,
+                                uiFont: .systemFont(ofSize: 12),
+                                color: .secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(width: colW, height: 64, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { nav.detail = .collection(kind: "album", id: a.id) }
+        .contextMenu {
+            Button { nav.detail = .collection(kind: "album", id: a.id) } label: { Label(settings.t("open"), systemImage: "arrow.up.forward.square") }
+            Button { player.playCollection(a, kind: "album") } label: { Label(settings.t("play_all"), systemImage: "play.fill") }
+            Button { player.toggleFavAlbum(a, lang: settings.lang) } label: {
+                Label(settings.t("fav_remove"), systemImage: "heart.slash")
+            }
+        } preview: {
+            CollectionPreview(item: a)
+        }
     }
 
     private func load() async {
