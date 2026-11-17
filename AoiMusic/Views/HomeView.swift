@@ -45,9 +45,21 @@ struct HomeView: View {
                 Text(failed ? settings.t("home_fail") : settings.t("home_sub"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                if !mergedHistory.isEmpty {
+                    GlassSection(title: settings.t("recent_played")) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 14) {
+                            ForEach(Array(mergedHistory.enumerated()), id: \.element.id) { i, s in
+                                songCard(s) { player.playSongs(mergedHistory, start: i) }
+                            }
+                        }
+                        .padding(.horizontal, 2)
+                    }
+                    }
+                }
                 if !featPlaylists.isEmpty {
                     GlassSection(title: settings.t("rec_playlists")) {
-                        shelf(featPlaylists) { item in tap(item) }
+                        heroShelf(featPlaylists) { item in tap(item) }
                     }
                 }
                 if !recSongs.isEmpty {
@@ -85,18 +97,6 @@ struct HomeView: View {
                         shelf(fanArtists) { a in nav.detail = .artist(id: a.id) }
                     }
                 }
-                if !mergedHistory.isEmpty {
-                    GlassSection(title: settings.t("recent_played")) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 14) {
-                            ForEach(Array(mergedHistory.enumerated()), id: \.element.id) { i, s in
-                                songCard(s) { player.playSongs(mergedHistory, start: i) }
-                            }
-                        }
-                        .padding(.horizontal, 2)
-                    }
-                    }
-                }
                 if !loaded {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
                 }
@@ -115,6 +115,19 @@ struct HomeView: View {
             HStack(alignment: .top, spacing: 14) {
                 ForEach(items) { item in
                     CollectionCard(item: item, onOpenCard: { tap(item) })
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+    }
+
+    // v113: featured playlists get the official app's large-card
+    // treatment - one big card per glance, not a row of thumbnails.
+    private func heroShelf(_ items: [CollectionItem], tap: @escaping (CollectionItem) -> Void) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(items) { item in
+                    CollectionCard(item: item, width: 272, onOpenCard: { tap(item) })
                 }
             }
             .padding(.horizontal, 2)
@@ -141,7 +154,7 @@ struct HomeView: View {
 
     private func songCard(_ s: Song, tap: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            ArtworkImage(urlString: s.art(300, 300), size: 118, corner: 12)
+            ArtworkImage(urlString: s.art(300, 300), size: 140, corner: 12)
             MarqueeText(text: s.title,
                         font: .caption.weight(.semibold),
                         uiFont: .systemFont(ofSize: 12, weight: .semibold))
@@ -150,7 +163,7 @@ struct HomeView: View {
                         uiFont: .systemFont(ofSize: 11),
                         color: .secondary)
         }
-        .frame(width: 118, alignment: .leading)
+        .frame(width: 140, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { tap() }
         .contextMenu {
