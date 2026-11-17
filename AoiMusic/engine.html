@@ -13,7 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.7';
+window.ENGINE_VERSION = '109.8';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -229,6 +229,90 @@ function bounded(promise, ms) {
 let queueOffset = 0;
 let appQueueIds = [];
 
+// ---------- v109.8: sound first, queue later ----------
+// On device (109.7 log, 2026-11-17 19:00) a tap on a 52-song list
+// rotated the WHOLE list through setQueue: 24.7s to settle, then the
+// play() after it hung 34s - the switch produced silence. A 1-song
+// queue in the same log settled end-to-end in 7.2s. Per-item
+// resolution is the cost, so a tap now setQueues only a small head
+// window (the target + the next two, startPlaying inside), gets its
+// sound, and the REST of the rotated list is appended to the live
+// queue in the background. Appends run OUTSIDE the serial op chain
+// (they can take as long as they take without blocking taps), and
+// the queueReqToken generation keeps a stale completion from ever
+// touching a newer queue.
+const HEAD_WINDOW = 3;
+// setQueue with the v109.1 drop-and-retry: unresolvable NON-target
+// ids are dropped and the call retried; if the TARGET itself is
+// unresolvable it reports and returns null (never a substitute).
+// Other errors throw, as before.
+async function setQueueDroppingBad(songs, targetId) {
+  let current = songs;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await music.setQueue({ songs: current, startIndex: 0, startPlaying: true });
+      return { kept: current };
+    } catch (e) {
+      const bad = parseUnresolved(e);
+      if (!bad.length || attempt >= 3) throw e;
+      if (bad.indexOf(targetId) >= 0) {
+        post({ type: 'log', message: 'playQueue: target song ' + targetId + ' unavailable in this storefront, not playing a substitute' });
+        post({ type: 'error', where: 'playQueue', message: 'target unavailable: ' + targetId });
+        return null;
+      }
+      const kept = current.filter(id => bad.indexOf(id) < 0);
+      if (kept.length === current.length || !kept.length) throw e;
+      post({ type: 'log', message: 'playQueue: dropped unresolvable ' + bad.join(', ') + ', retrying with ' + kept.length });
+      current = kept;
+    }
+  }
+}
+function completeQueueInBackground(rest, targetId, gen) {
+  if (!rest.length) return;
+  if (!music || !music.queue || typeof music.queue.append !== 'function') {
+    post({ type: 'log', message: 'queue completion unavailable (no queue.append); queue stays at head window' });
+    return;
+  }
+  (async () => {
+    for (let i = 0; i < rest.length; i += 20) {
+      if (gen !== queueReqToken) return;
+      const cur = loadedQueueIds();
+      if (!cur.length || cur.indexOf(targetId) < 0) return;
+      const chunk = rest.slice(i, i + 20);
+      try {
+        await music.queue.append({ songs: chunk });
+      } catch (e) {
+        const bad = parseUnresolved(e);
+        if (!bad.length) { post({ type: 'log', message: 'queue completion stopped: ' + String((e && e.message) || e) }); return; }
+        const kept = chunk.filter(id => bad.indexOf(id) < 0);
+        post({ type: 'log', message: 'queue completion dropped unresolvable ' + bad.join(', ') });
+        if (!kept.length) continue;
+        try { await music.queue.append({ songs: kept }); }
+        catch (e2) { post({ type: 'log', message: 'queue completion stopped: ' + String((e2 && e2.message) || e2) }); return; }
+      }
+    }
+    if (gen === queueReqToken) post({ type: 'log', message: 'queue completed in background (' + loadedQueueIds().length + ' songs)' });
+  })().catch(() => {});
+}
+// Shared by playQueue and jumpTo: head window in + play, rest later.
+// Returns false only when the target itself is unavailable.
+async function startRotated(rotatedAll, targetId, gen) {
+  const tQ = Date.now();
+  const win = rotatedAll.slice(0, HEAD_WINDOW);
+  const res = await setQueueDroppingBad(win, targetId);
+  if (!res) return false;
+  post({ type: 'log', message: 'setQueue settled in ' + (Date.now() - tQ) + 'ms (head window ' + res.kept.length + ' of ' + rotatedAll.length + ')' });
+  const tPlay = Date.now();
+  const pr = await bounded(music.play(), playTimeoutMs());
+  if (pr.timeout) post({ type: 'log', message: 'play TIMED OUT after ' + (Date.now() - tPlay) + 'ms (left running, chain unwedged)' });
+  else if (!pr.ok) post({ type: 'log', message: 'play failed: ' + String((pr.error && pr.error.message) || pr.error) });
+  else post({ type: 'log', message: 'play settled in ' + (Date.now() - tPlay) + 'ms' });
+  const dropped = new Set(win.filter(id => res.kept.indexOf(id) < 0));
+  const rest = rotatedAll.slice(win.length).filter(id => !dropped.has(id));
+  completeQueueInBackground(rest, targetId, gen);
+  return true;
+}
+
 window.AoiEngine = {
   async authorize() {
     if (!music) { post({ type: 'error', where: 'authorize', message: 'engine not ready' }); return; }
@@ -268,41 +352,15 @@ window.AoiEngine = {
         post({ type: 'log', message: 'playQueue: target already loaded, play ' + (pr0.timeout ? 'TIMED OUT' : pr0.ok ? 'settled' : 'failed') + ', total ' + (Date.now() - t0) + 'ms' });
         return;
       }
-      let rotated = ids.slice(start).concat(ids.slice(0, start)).map(String);
+      const rotated = ids.slice(start).concat(ids.slice(0, start)).map(String);
       post({ type: 'log', message: 'playQueue start (' + ids.length + ' songs @' + start + ', rotated)' });
       // Modes BEFORE setQueue: startPlaying begins inside it.
       music.shuffleMode = sh ? 1 : 0;
       music.repeatMode = mkRepeat(rp);
-      const tQ = Date.now();
-      // Drop-and-retry (v109.1): MusicKit rejects the WHOLE setQueue
-      // when one id cannot be resolved in this storefront. Drop the
-      // named ids and retry - UNLESS the dropped id is the tapped
-      // song itself (v109.4): then stop and say so, never substitute.
-      for (let attempt = 0; ; attempt++) {
-        try {
-          await music.setQueue({ songs: rotated, startIndex: 0, startPlaying: true });
-          break;
-        } catch (e) {
-          const bad = parseUnresolved(e);
-          if (!bad.length || attempt >= 3) throw e;
-          if (bad.indexOf(targetId) >= 0) {
-            post({ type: 'log', message: 'playQueue: target song ' + targetId + ' unavailable in this storefront, not playing a substitute' });
-            post({ type: 'error', where: 'playQueue', message: 'target unavailable: ' + targetId });
-            return;
-          }
-          const kept = rotated.filter(id => bad.indexOf(id) < 0);
-          if (kept.length === rotated.length || !kept.length) throw e;
-          post({ type: 'log', message: 'playQueue: dropped unresolvable ' + bad.join(', ') + ', retrying with ' + kept.length });
-          rotated = kept;
-        }
-      }
-      queueOffset = start;
-      post({ type: 'log', message: 'setQueue settled in ' + (Date.now() - tQ) + 'ms' });
-      const tPlay = Date.now();
-      const pr = await bounded(music.play(), playTimeoutMs());
-      if (pr.timeout) post({ type: 'log', message: 'play TIMED OUT after ' + (Date.now() - tPlay) + 'ms (left running, chain unwedged)' });
-      else if (!pr.ok) post({ type: 'log', message: 'play failed: ' + String((pr.error && pr.error.message) || pr.error) });
-      else post({ type: 'log', message: 'play settled in ' + (Date.now() - tPlay) + 'ms' });
+      // v109.8: head window first, the rest of the queue lands in
+      // the background (see startRotated).
+      const okStart = await startRotated(rotated, targetId, token);
+      if (okStart) queueOffset = start;
       post({ type: 'log', message: 'playQueue settled in ' + (Date.now() - t0) + 'ms' });
     }).catch(e => reportErr('playQueue', e));
   },
@@ -337,15 +395,20 @@ window.AoiEngine = {
       const pos = cur.indexOf(targetId);
       if (pos < 0) { post({ type: 'log', message: 'jumpTo: target ' + targetId + ' not in engine queue' }); return; }
       const rotated = cur.slice(pos).concat(cur.slice(0, pos));
-      try {
-        await music.setQueue({ songs: rotated, startIndex: 0, startPlaying: true });
-        queueOffset = i | 0;
-        post({ type: 'log', message: 'jumpTo ' + (i | 0) + ': rotated queue, target at head' });
-      } catch (e) {
+      // v109.8: same two-phase start as playQueue; bumping the
+      // generation also retires any background completion still
+      // running for the previous queue.
+      const gen = ++queueReqToken;
+      let okJump = false;
+      try { okJump = await startRotated(rotated, targetId, gen); }
+      catch (e) {
         post({ type: 'log', message: 'jumpTo rotation failed: ' + String((e && e.message) || e) });
         return;
       }
-      await bounded(music.play(), playTimeoutMs());
+      if (okJump) {
+        queueOffset = i | 0;
+        post({ type: 'log', message: 'jumpTo ' + (i | 0) + ': rotated queue, target at head' });
+      }
     }).catch(() => {});
   },
   seek(sec) { if (music) { try { music.seekToTime(Number(sec) || 0); } catch (e) {} } },
