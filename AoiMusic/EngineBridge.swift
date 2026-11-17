@@ -216,9 +216,10 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         }
     }
     func unauthorize() { call("window.AoiEngine && AoiEngine.unauthorize()") }
-    func playQueue(ids: [String], start: Int, shuffle: Bool, repeatMode: Int) {
+    func playQueue(ids: [String], start: Int, shuffle: Bool, repeatMode: Int, targetJSON: String? = nil) {
         let arr = ids.map { jsString($0) }.joined(separator: ",")
-        call("window.AoiEngine && AoiEngine.playQueue([\(arr)], \(start), \(shuffle), \(repeatMode))")
+        let dataArg = targetJSON.map { ", " + jsString($0) } ?? ""
+        call("window.AoiEngine && AoiEngine.playQueue([\(arr)], \(start), \(shuffle), \(repeatMode)\(dataArg))")
     }
     func play() { call("window.AoiEngine && AoiEngine.play()") }
     func pause() { call("window.AoiEngine && AoiEngine.pause()") }
