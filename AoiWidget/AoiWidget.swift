@@ -2,15 +2,19 @@ import WidgetKit
 import SwiftUI
 import AppIntents
 
-// The smallest square widget (her spec, v107): the current song's cover
-// fills the whole face, and three fully transparent liquid-glass buttons
-// ride along the bottom — previous, play/pause, next. In the system's
-// clear theme the cover itself turns to liquid glass, because the
-// artwork IS the widget's container background, which is exactly the
-// layer clear mode glassifies. State arrives through the app group the
-// app publishes into (see WidgetShared in the app target); the buttons
-// post transport commands back through the same group + a Darwin
-// notification, which the app executes on its playback engine.
+// The smallest square widget (her spec): the current song's cover fills
+// the whole face, and three glass buttons ride along the bottom —
+// previous, play/pause, next. In the system's clear theme the cover
+// itself turns to liquid glass, because the artwork IS the widget's
+// container background, which is exactly the layer clear mode
+// glassifies. State arrives through the app group the app publishes
+// into (see WidgetShared in the app target); the buttons post transport
+// commands back through the same group + a Darwin notification, which
+// the app executes on its playback engine.
+// v108: the buttons are plain ultraThinMaterial circles with a stroke —
+// v107 put .glassEffect(.clear.interactive()) on the button labels and
+// on her phone the buttons rendered as NOTHING at all (empty widget:
+// gradient + note, no controls). Bog-standard materials always render.
 private let groupId = "group.com.aoimusic.app"
 private let commandKey = "np_command"
 
@@ -82,33 +86,32 @@ struct NPProvider: TimelineProvider {
     }
 }
 
-private struct GlassCircle: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(.clear.interactive(), in: .circle)
-        } else {
-            content.background(.ultraThinMaterial, in: Circle())
-        }
-    }
-}
-
 struct NPWidgetView: View {
     var entry: NPEntry
 
     var body: some View {
-        VStack {
-            Spacer()
-            HStack(spacing: 0) {
+        ZStack {
+            VStack {
                 Spacer()
-                glassButton("backward.fill", intent: PrevIntent())
-                Spacer()
-                glassButton(entry.isPlaying ? "pause.fill" : "play.fill", intent: ToggleIntent())
-                Spacer()
-                glassButton("forward.fill", intent: NextIntent())
-                Spacer()
+                // Soft scrim so the white glyphs stay readable on light covers.
+                LinearGradient(colors: [.clear, .black.opacity(0.30)],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: 68)
             }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 10)
+            VStack {
+                Spacer()
+                HStack(spacing: 0) {
+                    Spacer()
+                    glassButton("backward.fill", intent: PrevIntent())
+                    Spacer()
+                    glassButton(entry.isPlaying ? "pause.fill" : "play.fill", intent: ToggleIntent())
+                    Spacer()
+                    glassButton("forward.fill", intent: NextIntent())
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 10)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .containerBackground(for: .widget) { artwork }
@@ -134,14 +137,18 @@ struct NPWidgetView: View {
 
     private func glassButton<I: AppIntent>(_ icon: String, intent: I) -> some View {
         Button(intent: intent) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
-                .frame(width: 40, height: 40)
+            ZStack {
+                Circle().fill(.ultraThinMaterial)
+                Circle().strokeBorder(.white.opacity(0.45), lineWidth: 1)
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+            }
+            .frame(width: 40, height: 40)
+            .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
         }
         .buttonStyle(.plain)
-        .modifier(GlassCircle())
     }
 }
 
