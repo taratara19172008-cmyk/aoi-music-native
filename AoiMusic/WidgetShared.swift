@@ -7,7 +7,7 @@ import WidgetKit
 // notification (see Player.handleWidgetCommand). The group id and keys
 // are duplicated in the widget target — keep them in sync.
 enum WidgetShared {
-    static let groupId = "group.com.aoimusic.app"
+    static let groupId = "group.c2bb27f0fc08e2b5.1"
     static let commandKey = "np_command"
     static let commandNotification = "com.aoimusic.widget.command"
 
@@ -21,6 +21,11 @@ enum WidgetShared {
         defaults?.set(artist, forKey: "np_artist")
         defaults?.set(isPlaying, forKey: "np_playing")
         WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // v114: the widgets tint their glass with the app's theme colour.
+    static func publishAccent(_ hex: String) {
+        defaults?.set(hex, forKey: "accent_hex")
     }
 
     static func publishArtwork(_ data: Data) {
