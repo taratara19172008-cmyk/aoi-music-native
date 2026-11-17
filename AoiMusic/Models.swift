@@ -16,6 +16,7 @@ struct SongAttrs: Codable, Hashable {
     var artwork: Artwork?
     var previews: [Preview]?
     var durationInMillis: Int?
+    var isrc: String?
     var playParams: PlayParams?
     struct PlayParams: Codable, Hashable { var id: String?; var catalogId: String?; var isLibrary: Bool? }
     struct Preview: Codable, Hashable { var url: String? }
