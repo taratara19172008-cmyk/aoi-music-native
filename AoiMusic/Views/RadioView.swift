@@ -132,5 +132,11 @@ struct RadioView: View {
             let seen = Set(playlists.map { $0.id })
             playlists += chartPls.filter { !seen.contains($0.id) }
         }
+        // v113: ghost cells - recommendation/chart entries carrying
+        // no name render as blank cards in the grids. A card must at
+        // least have a title; artwork alone is not content.
+        let named = { (i: CollectionItem) in !i.title.trimmingCharacters(in: .whitespaces).isEmpty }
+        stations = stations.filter(named)
+        playlists = playlists.filter(named)
     }
 }
