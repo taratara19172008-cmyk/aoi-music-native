@@ -13,7 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.9';
+window.ENGINE_VERSION = '109.10';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -35,6 +35,37 @@ let music = null;
 (function installRelay() {
   const relayBase = (window.AOI_CONFIG && window.AOI_CONFIG.relayBase) || '';
   if (!relayBase) return;
+  // v109.10: the relay is now a runtime switch, DEFAULT OFF (direct).
+  // GPT's full review (2026-11-17) pointed out the native engine ran
+  // direct v58-v108 and the relay was never A/B-tested under equal
+  // conditions; the Safari web app's speed cannot be credited to it.
+  // Direct also removes one shared-egress-IP throttling suspect.
+  // localStorage 'aoi-relay' = '1' re-enables it (AoiEngine.setRelay).
+  let relayOn = false;
+  try { relayOn = localStorage.getItem('aoi-relay') === '1'; } catch (e) {}
+  window.__aoiSetRelay = on => {
+    relayOn = !!on;
+    try { localStorage.setItem('aoi-relay', on ? '1' : '0'); } catch (e) {}
+    post({ type: 'log', message: 'relay ' + (relayOn ? 'ON' : 'OFF (direct)') });
+  };
+  // v109.10 diagnostics: log slow (>3s) or failed fetch calls with
+  // method + host/path + status + duration. Never logs auth headers,
+  // tokens or query strings.
+  function netLog(rawUrl, method, status, ms, err) {
+    if (!(ms > 3000 || (status && status >= 400) || err)) return;
+    let hp = rawUrl || '';
+    try { const u = new URL(rawUrl, location.href); hp = u.hostname + u.pathname; } catch (e) {}
+    post({ type: 'log', message: 'net ' + (method || 'GET') + ' ' + hp + ' -> ' + (err ? 'ERR ' + err : status) + ' in ' + ms + 'ms' });
+  }
+  function timedFetch(thunk, rawUrl, method) {
+    const t0 = Date.now();
+    let pr;
+    try { pr = thunk(); } catch (e) { netLog(rawUrl, method, 0, Date.now() - t0, String((e && e.message) || e)); throw e; }
+    return Promise.resolve(pr).then(
+      r => { netLog(rawUrl, method, r && r.status, Date.now() - t0, null); return r; },
+      e => { netLog(rawUrl, method, 0, Date.now() - t0, String((e && e.message) || e)); throw e; }
+    );
+  }
   const hostRe = /(^|\.)music\.apple\.com$/;
   function relayURL(raw) {
     try {
@@ -48,39 +79,38 @@ let music = null;
   if (typeof window.fetch === 'function') {
     const origFetch = window.fetch.bind(window);
     window.fetch = function (input, init) {
+      const raw = (typeof input === 'string') ? input : ((input && input.url) || '');
+      const method = (init && init.method) || (input && input.method) || 'GET';
       try {
-        const raw = (typeof input === 'string') ? input : ((input && input.url) || '');
-        const target = raw ? relayURL(raw) : null;
+        const target = (relayOn && raw) ? relayURL(raw) : null;
         if (target) {
-          if (typeof input === 'string' || !input) return origFetch(target, init);
+          if (typeof input === 'string' || !input) return timedFetch(() => origFetch(target, init), raw, method);
           // Request object: hand the ORIGINAL request to the relay
           // URL - fetch(url, request) preserves method, headers, body
-          // and the AbortSignal/credentials/mode. Rebuilding it (the
-          // v109.3 way) dropped the signal, so MusicKit could never
-          // cancel superseded requests and stale work piled up at the
-          // relay (Codex consult, 2026-11-17). The Safari service
-          // worker forwards originals the same way and is fast on
-          // the same phone and relay. Rebuild only when an init was
-          // also passed alongside the Request (rare).
-          if (!init) return origFetch(target, input);
+          // and the AbortSignal/credentials/mode (the v109.7 fix;
+          // rebuilding dropped the signal). Rebuild only when an
+          // init was also passed alongside the Request (rare).
+          if (!init) return timedFetch(() => origFetch(target, input), raw, method);
           const ni = { method: input.method, headers: input.headers, redirect: 'follow' };
           if (input.method !== 'GET' && input.method !== 'HEAD') {
-            return input.clone().arrayBuffer().then(body => { ni.body = body; return origFetch(target, ni); });
+            return timedFetch(() => input.clone().arrayBuffer().then(body => { ni.body = body; return origFetch(target, ni); }), raw, method);
           }
-          return origFetch(target, ni);
+          return timedFetch(() => origFetch(target, ni), raw, method);
         }
       } catch (e) {}
-      return origFetch(input, init);
+      return timedFetch(() => origFetch(input, init), raw, method);
     };
   }
   if (window.XMLHttpRequest && XMLHttpRequest.prototype && XMLHttpRequest.prototype.open) {
     const origOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function () {
-      try { const t = relayURL(arguments[1]); if (t) arguments[1] = t; } catch (e) {}
+      const xhr = this, rawUrl = arguments[1], method = arguments[0], t0 = Date.now();
+      try { xhr.addEventListener('loadend', () => netLog(rawUrl, method, xhr.status, Date.now() - t0, null)); } catch (e) {}
+      try { const t = relayOn ? relayURL(arguments[1]) : null; if (t) arguments[1] = t; } catch (e) {}
       return origOpen.apply(this, arguments);
     };
   }
-  post({ type: 'log', message: 'relay layer on' });
+  post({ type: 'log', message: 'relay layer installed, mode=' + (relayOn ? 'relay' : 'direct') });
 })();
 // ---------- playback core (v108: the web app's proven shape) ----------
 // v105-v107 wrapped MusicKit in an adversarial control system: per-call
@@ -100,6 +130,25 @@ let appRepeat = 0, appShuffle = false;
 
 let opChain = Promise.resolve();
 let queueReqToken = 0;
+// v109.10: ONE mutex for every queue mutation. setQueue (taps) and
+// playLater (background completion) both change MusicKit's queue;
+// before, a playLater chunk already in flight could land AFTER a
+// newer tap's setQueue and append the OLD list into the NEW queue -
+// the generation check only ran between chunks, never during one.
+// Routing both through mutate() means a tap's setQueue waits for an
+// in-flight chunk to settle, and the chunk lands in the queue it
+// belonged to, which the setQueue then replaces wholesale.
+let mutationChain = Promise.resolve();
+function mutate(fn) {
+  const p = mutationChain.then(fn, fn);
+  mutationChain = p.catch(() => {});
+  return p;
+}
+// The app list the loaded queue was built from (any rotation of it).
+// playQueue compares it to tell 'same list, same song re-tapped'
+// (just play; keep the in-flight completion alive) from 'same song,
+// different list' (must rebuild the queue).
+let queueSignature = '';
 function op(fn) {
   const run = async () => { return await fn(); };
   const p = opChain.then(run, run);
@@ -132,17 +181,44 @@ function sendAuth() {
 }
 setInterval(() => {
   if (!music) return;
-  assertMediaSession();
   post({ type: 'progress', t: music.currentPlaybackTime || 0, d: music.currentPlaybackDuration || 0, isPlaying: !!music.isPlaying });
 }, 500);
+
+// ---------- v109.10 diagnostics: JS heartbeat + visibility ----------
+// The 2026-11-17 explosion had a 10s timer fire 77s late, which means
+// this page's JS timers were starved for over a minute. This 1s beat
+// records any gap > 2.5s with the page's visibility at wake time, so
+// the next stall names itself: throttled-while-hidden, long task, or
+// no gap at all (then the wait was inside MusicKit, not the timers).
+let lastBeat = 0;
+try { lastBeat = performance.now(); } catch (e) { lastBeat = Date.now(); }
+setInterval(() => {
+  let now = 0;
+  try { now = performance.now(); } catch (e) { now = Date.now(); }
+  const gap = now - lastBeat;
+  lastBeat = now;
+  if (gap > 2500) {
+    let vis = '?', hid = '?';
+    try { vis = document.visibilityState; hid = String(document.hidden); } catch (e) {}
+    post({ type: 'log', message: 'JS heartbeat gap ' + Math.round(gap) + 'ms (visibility=' + vis + ', hidden=' + hid + ')' });
+  }
+}, 1000);
+try {
+  document.addEventListener('visibilitychange', () => post({ type: 'log', message: 'visibility -> ' + document.visibilityState }));
+} catch (e) {}
+try {
+  window.addEventListener('pagehide', () => post({ type: 'log', message: 'pagehide' }));
+  window.addEventListener('pageshow', () => post({ type: 'log', message: 'pageshow' }));
+} catch (e) {}
 
 // ---------- lock screen / control centre buttons (v107) ----------
 // iOS picks the remote buttons from the handlers the page registers:
 // the web defaults surface ±10s seek buttons, while the official app
 // shows previous/next track. Registering track handlers (and clearing
 // the seek ones) makes the system offer track changes, like the
-// original. Re-asserted on the progress tick in case MusicKit rewrites
-// the handlers when a new item loads.
+// original. Asserted once at configure and again whenever the item
+// changes (v109.10: no longer re-registered every 500ms tick - GPT's
+// review flagged the per-tick re-registration as pure churn).
 function assertMediaSession() {
   try {
     if (!music || !('mediaSession' in navigator)) return;
@@ -167,7 +243,8 @@ async function initMK() {
     music = MusicKit.getInstance();
     window.__aoiHasMusic = true;
     music.addEventListener('playbackStateDidChange', sendState);
-    music.addEventListener('nowPlayingItemDidChange', () => { post({ type: 'item', item: itemJSON() }); sendState(); });
+    music.addEventListener('nowPlayingItemDidChange', () => { post({ type: 'item', item: itemJSON() }); sendState(); assertMediaSession(); });
+    assertMediaSession();
     await swReady;
     post({ type: 'ready' });
     sendAuth();
@@ -262,7 +339,7 @@ async function setQueueDroppingBad(songs, targetId) {
   let current = songs;
   for (let attempt = 0; ; attempt++) {
     try {
-      await music.setQueue({ songs: current, startIndex: 0, startPlaying: true });
+      await mutate(() => music.setQueue({ songs: current, startIndex: 0, startPlaying: true }));
       return { kept: current };
     } catch (e) {
       const bad = parseUnresolved(e);
@@ -296,17 +373,26 @@ function completeQueueInBackground(rest, targetId, gen) {
     for (let i = 0; i < rest.length; i += COMPLETION_CHUNK) {
       if (completionStale(gen, targetId)) return;
       const chunk = rest.slice(i, i + COMPLETION_CHUNK);
-      try {
-        await music.playLater({ songs: chunk });
-      } catch (e) {
-        const bad = parseUnresolved(e);
-        if (!bad.length) { post({ type: 'log', message: 'queue completion stopped: ' + String((e && e.message) || e) }); return; }
-        const kept = chunk.filter(id => bad.indexOf(id) < 0);
-        post({ type: 'log', message: 'queue completion dropped unresolvable ' + bad.join(', ') });
-        if (!kept.length) continue;
-        try { await music.playLater({ songs: kept }); }
-        catch (e2) { post({ type: 'log', message: 'queue completion stopped: ' + String((e2 && e2.message) || e2) }); return; }
-      }
+      // v109.10: the append runs under the queue mutex and the
+      // staleness check repeats INSIDE the lock, immediately before
+      // the mutation - so a chunk can neither interleave with a
+      // tap's setQueue nor land in a queue newer than its own.
+      const outcome = await mutate(async () => {
+        if (completionStale(gen, targetId)) return 'stale';
+        try {
+          await music.playLater({ songs: chunk });
+          return 'ok';
+        } catch (e) {
+          const bad = parseUnresolved(e);
+          if (!bad.length) { post({ type: 'log', message: 'queue completion stopped: ' + String((e && e.message) || e) }); return 'stop'; }
+          const kept = chunk.filter(id => bad.indexOf(id) < 0);
+          post({ type: 'log', message: 'queue completion dropped unresolvable ' + bad.join(', ') });
+          if (!kept.length) return 'ok';
+          try { await music.playLater({ songs: kept }); return 'ok'; }
+          catch (e2) { post({ type: 'log', message: 'queue completion stopped: ' + String((e2 && e2.message) || e2) }); return 'stop'; }
+        }
+      });
+      if (outcome !== 'ok') return;
       if (i + COMPLETION_CHUNK < rest.length) await new Promise(r => setTimeout(r, COMPLETION_GAP_MS));
     }
     if (!completionStale(gen, targetId)) post({ type: 'log', message: 'queue completed in background (' + loadedQueueIds().length + ' songs)' });
@@ -317,8 +403,16 @@ function completeQueueInBackground(rest, targetId, gen) {
 async function startRotated(rotatedAll, targetId, gen) {
   const tQ = Date.now();
   const win = rotatedAll.slice(0, HEAD_WINDOW);
-  const res = await setQueueDroppingBad(win, targetId);
+  // v109.10: pure observer - if setQueue is still pending after 20s
+  // it only LOGS (never re-issues, never interrupts; the v105-v107
+  // lesson). If this page's timers are throttled the log itself
+  // arrives late, which the 1s heartbeat will already have shown.
+  const slowTimer = setTimeout(() => post({ type: 'log', message: 'setQueue still pending after 20s (target ' + targetId + ')' }), 20000);
+  let res = null;
+  try { res = await setQueueDroppingBad(win, targetId); }
+  finally { clearTimeout(slowTimer); }
   if (!res) return false;
+  queueSignature = appQueueIds.join(',');
   post({ type: 'log', message: 'setQueue settled in ' + (Date.now() - tQ) + 'ms (head window ' + res.kept.length + ' of ' + rotatedAll.length + ')' });
   const tPlay = Date.now();
   const pr = await bounded(music.play(), playTimeoutMs());
@@ -350,6 +444,7 @@ async function startFromAppList(targetId) {
   return ok;
 }
 
+let queueReqSeq = 0;
 window.AoiEngine = {
   async authorize() {
     if (!music) { post({ type: 'error', where: 'authorize', message: 'engine not ready' }); return; }
@@ -367,11 +462,11 @@ window.AoiEngine = {
     // Modes are captured at CALL time: the op may run later, and a newer
     // call's settings must not leak into an older queued operation.
     const sh = !!shuffle, rp = repeat | 0, start = startIndex | 0;
-    const token = ++queueReqToken;
+    const seq = ++queueReqSeq;
     return op(async () => {
       // Coalescing: if a NEWER playQueue was requested while this one
       // waited its turn, skip it - only the latest queue matters.
-      if (token !== queueReqToken) { post({ type: 'log', message: 'playQueue superseded, skipped' }); return; }
+      if (seq !== queueReqSeq) { post({ type: 'log', message: 'playQueue superseded, skipped' }); return; }
       const t0 = Date.now();
       appShuffle = sh; appRepeat = rp;
       const targetId = String(ids[start]);
@@ -385,10 +480,24 @@ window.AoiEngine = {
       // Next/prev follow the rotated queue cyclically (same order);
       // jumpTo re-rotates by id.
       if (music.nowPlayingItem && String(music.nowPlayingItem.id) === targetId) {
-        const pr0 = await bounded(music.play(), playTimeoutMs());
-        post({ type: 'log', message: 'playQueue: target already loaded, play ' + (pr0.timeout ? 'TIMED OUT' : pr0.ok ? 'settled' : 'failed') + ', total ' + (Date.now() - t0) + 'ms' });
-        return;
+        if (appQueueIds.join(',') === queueSignature) {
+          // v109.10 (GPT review Q5.2): SAME list, same song re-tapped.
+          // Just play - and do NOT bump the queue generation: before,
+          // the call-time bump retired the background completion
+          // still landing for this very list, so the rest of the
+          // list silently never arrived.
+          music.shuffleMode = sh ? 1 : 0;
+          music.repeatMode = mkRepeat(rp);
+          const pr0 = await bounded(music.play(), playTimeoutMs());
+          post({ type: 'log', message: 'playQueue: same song, same list - play only (' + (pr0.timeout ? 'TIMED OUT' : pr0.ok ? 'settled' : 'failed') + ', total ' + (Date.now() - t0) + 'ms)' });
+          return;
+        }
+        // Same song, DIFFERENT list: fall through and rebuild the
+        // queue from the new list. Before, this early-returned and
+        // left MusicKit playing the OLD list under the new UI list.
+        post({ type: 'log', message: 'playQueue: same song, different list - rebuilding queue' });
       }
+      const token = ++queueReqToken;
       const rotated = ids.slice(start).concat(ids.slice(0, start)).map(String);
       post({ type: 'log', message: 'playQueue start (' + ids.length + ' songs @' + start + ', rotated)' });
       // Modes BEFORE setQueue: startPlaying begins inside it.
@@ -406,8 +515,14 @@ window.AoiEngine = {
     // A station request is the newer intent: it invalidates any WAITING
     // playQueue (a running one still finishes first, then this runs).
     queueReqToken++;
-    return op(async () => { await music.setQueue({ station: id }); await music.play(); })
-      .catch(e => reportErr('station', e));
+    return op(async () => {
+      const r1 = await bounded(music.setQueue({ station: id }), 15000);
+      if (r1.timeout) post({ type: 'log', message: 'station setQueue TIMED OUT after 15s (left running)' });
+      else if (!r1.ok) throw r1.error;
+      const r2 = await bounded(music.play(), playTimeoutMs());
+      if (r2.timeout) post({ type: 'log', message: 'station play TIMED OUT (left running)' });
+      else if (!r2.ok) throw r2.error;
+    }).catch(e => reportErr('station', e));
   },
   play() { if (music) return op(() => bounded(music.play(), playTimeoutMs())).catch(() => {}); },
   pause() { if (music) return op(() => bounded(music.pause(), playTimeoutMs())).catch(() => {}); },
@@ -457,8 +572,13 @@ window.AoiEngine = {
       const targetId = appQueueIds[i | 0];
       const cur = loadedQueueIds();
       if (!targetId || !cur.length) {
-        const r = await bounded(music.changeToMediaAtIndex(i | 0), jumpTimeoutMs());
-        post({ type: 'log', message: 'jumpTo fallback (no known queue): ' + (r.timeout ? 'TIMED OUT' : r.ok ? 'settled' : 'failed') });
+        // v109.10: the old fallback called changeToMediaAtIndex -
+        // the API proven on device to hang indefinitely in this
+        // webview. It is banned from the control chain entirely:
+        // with no known queue there is nothing safe to jump in, so
+        // report and stop instead of gambling on a hang.
+        post({ type: 'log', message: 'jumpTo: no known queue, refusing (changeToMediaAtIndex is banned)' });
+        post({ type: 'error', where: 'jumpTo', message: 'no queue context for jump' });
         return;
       }
       if (music.nowPlayingItem && String(music.nowPlayingItem.id) === targetId) {
@@ -493,7 +613,8 @@ window.AoiEngine = {
   seek(sec) { if (music) { try { music.seekToTime(Number(sec) || 0); } catch (e) {} } },
   setShuffle(b) { appShuffle = !!b; if (music) music.shuffleMode = appShuffle ? 1 : 0; },
   setRepeat(m) { appRepeat = m | 0; if (music) music.repeatMode = mkRepeat(appRepeat); },
-  state() { sendState(); const it = itemJSON(); if (it) post({ type: 'item', item: it }); }
+  state() { sendState(); const it = itemJSON(); if (it) post({ type: 'item', item: it }); },
+  setRelay(on) { if (window.__aoiSetRelay) window.__aoiSetRelay(on); }
 };
 </script>
 </body>
