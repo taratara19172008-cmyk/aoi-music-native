@@ -36,7 +36,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     func logEvent(_ s: String) {
         var lines = lastError.isEmpty ? [] : lastError.components(separatedBy: "\n")
         lines.append(s)
-        if lines.count > 10 { lines = Array(lines.suffix(10)) }
+        if lines.count > 80 { lines = Array(lines.suffix(80)) }
         lastError = lines.joined(separator: "\n")
     }
 
