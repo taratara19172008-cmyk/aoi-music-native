@@ -220,6 +220,18 @@ struct CollectionView: View {
                     .frame(width: w, height: w)
             } else {
                 ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
+                // v113: a blurred copy of the cover itself in the
+                // bottom band - the photo's own pixels dissolve
+                // before the colour melt takes over, so no edge of
+                // the image survives anywhere.
+                ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
+                    .blur(radius: 16)
+                    .mask(
+                        LinearGradient(stops: [
+                            .init(color: .clear, location: 0.42),
+                            .init(color: .black, location: 0.85),
+                        ], startPoint: .top, endPoint: .bottom)
+                    )
             }
             // Long multi-stop melt (v107): the page-bottom colour is the
             // cover's own bottom-edge colour, and it seeps in gradually
@@ -227,11 +239,11 @@ struct CollectionView: View {
             LinearGradient(
                 stops: [
                     .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.85), location: 0.0),
-                    .init(color: .clear, location: 0.20),
-                    .init(color: .clear, location: 0.44),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.28), location: 0.62),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.62), location: 0.78),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.90), location: 0.92),
+                    .init(color: .clear, location: 0.16),
+                    .init(color: .clear, location: 0.40),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.22), location: 0.58),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.50), location: 0.74),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.82), location: 0.88),
                     .init(color: palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95), location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom)
