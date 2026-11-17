@@ -155,6 +155,24 @@ struct ArtistView: View {
                 }
                 .frame(width: w, height: 360)
                 .clipped()
+                // v113: blurred copy of the photo in the bottom band,
+                // same melt treatment as the album/playlist hero -
+                // the picture dissolves instead of ending.
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img): img.resizable().scaledToFill()
+                    default: Color.clear
+                    }
+                }
+                .frame(width: w, height: 360)
+                .clipped()
+                .blur(radius: 16)
+                .mask(
+                    LinearGradient(stops: [
+                        .init(color: .clear, location: 0.45),
+                        .init(color: .black, location: 0.90),
+                    ], startPoint: .top, endPoint: .bottom)
+                )
             } else {
                 Color.white.opacity(0.3)
                     .frame(width: w, height: 360)
@@ -164,9 +182,10 @@ struct ArtistView: View {
                     .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.85), location: 0.0),
                     .init(color: .clear, location: 0.18),
                     .init(color: .clear, location: 0.34),
-                    .init(color: .black.opacity(0.34), location: 0.64),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.45), location: 0.80),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.80), location: 0.92),
+                    .init(color: .black.opacity(0.30), location: 0.60),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.30), location: 0.70),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.60), location: 0.84),
+                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.88), location: 0.94),
                     .init(color: palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95), location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom)
