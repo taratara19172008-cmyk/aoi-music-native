@@ -678,3 +678,185 @@ struct CreatePlaylistSheet: View {
         }
     }
 }
+
+
+// v114: a bare glyph made of liquid glass - no tile, disc or plate
+// behind it. The system glass renders in a small field and is then
+// clipped by the symbol's own silhouette, so the button IS the
+// shape of its icon; a translucent tint of the same glyph sits on
+// top so the symbol stays legible over any cover.
+struct GlyphGlassIcon: View {
+    let icon: String
+    var size: CGFloat = 20
+    var weight: Font.Weight = .semibold
+    var tint: Color = .white
+
+    var body: some View {
+        let glyph = Image(systemName: icon)
+            .font(.system(size: size, weight: weight))
+        ZStack {
+            Rectangle()
+                .fill(.white.opacity(0.001))
+                .glassEffect(.clear.interactive(), in: .rect(cornerRadius: 2))
+                .mask { glyph }
+            glyph
+                .foregroundStyle(
+                    LinearGradient(colors: [tint.opacity(0.92), tint.opacity(0.5)],
+                                   startPoint: .top, endPoint: .bottom)
+                )
+        }
+        .frame(width: size * 1.8, height: size * 1.8)
+        .shadow(color: .black.opacity(0.22), radius: 5, y: 2)
+    }
+}
+
+
+// v114: pick songs INTO one of her own playlists - from Recently
+// Played, Loved Songs, and the tracks of Favorite Albums. Multi-
+// select with checkmarks; songs already in the playlist are marked
+// and can't be picked again.
+struct AddSongsSheet: View {
+    let playlistId: String
+    let existing: Set<String>
+    var onAdded: ([Song]) -> Void
+    @EnvironmentObject var api: APIClient
+    @EnvironmentObject var player: Player
+    @EnvironmentObject var settings: AppSettings
+    @Environment(\.dismiss) private var dismiss
+    @State private var picked: [Song] = []
+    @State private var albumTracks: [Song]?
+    @State private var albumName = ""
+    @State private var loadingAlbum = false
+    @State private var adding = false
+
+    private func isPicked(_ s: Song) -> Bool { picked.contains { $0.id == s.id } }
+    private func isExisting(_ s: Song) -> Bool { existing.contains(s.id) || existing.contains(s.playbackId) }
+    private func toggle(_ s: Song) {
+        if isPicked(s) { picked.removeAll { $0.id == s.id } } else { picked.append(s) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let tr = albumTracks {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left").font(.subheadline.weight(.semibold))
+                            Text(albumName).font(.headline).lineLimit(1)
+                        }
+                        .foregroundStyle(settings.accent)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                        .onTapGesture { albumTracks = nil }
+                        ForEach(tr) { s in pickRow(s) }
+                    } else {
+                        if !player.history.isEmpty {
+                            SectionTitle(text: settings.t("recent_played"))
+                            ForEach(Array(player.history.prefix(30))) { s in pickRow(s) }
+                        }
+                        if !player.favSongs.isEmpty {
+                            SectionTitle(text: settings.t("fav_songs"))
+                            ForEach(player.favSongs) { s in pickRow(s) }
+                        }
+                        if !player.favAlbums.isEmpty {
+                            SectionTitle(text: settings.t("lib_albums"))
+                            ForEach(player.favAlbums) { a in albumRow(a) }
+                        }
+                        if player.history.isEmpty && player.favSongs.isEmpty && player.favAlbums.isEmpty {
+                            Text(settings.t("empty")).foregroundStyle(.secondary).padding(.top, 30)
+                        }
+                    }
+                    Spacer(minLength: 24)
+                }
+                .padding(.horizontal, 16)
+            }
+            .navigationTitle(settings.t("pick_songs"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(settings.t("cancel")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        addPicked()
+                    } label: {
+                        if adding { ProgressView() }
+                        else { Text("\(settings.t("add_selected")) (\(picked.count))").fontWeight(.semibold) }
+                    }
+                    .disabled(picked.isEmpty || adding)
+                }
+            }
+        }
+    }
+
+    private func pickRow(_ s: Song) -> some View {
+        let ex = isExisting(s)
+        return HStack(spacing: 10) {
+            ArtworkImage(urlString: s.art(120, 120), size: 44, corner: 8)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(s.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(s.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            if ex {
+                Text(settings.t("in_list")).font(.caption).foregroundStyle(.tertiary)
+            } else {
+                Image(systemName: isPicked(s) ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22))
+                    .foregroundStyle(isPicked(s) ? settings.accent : .tertiary)
+            }
+        }
+        .padding(.vertical, 5)
+        .opacity(ex ? 0.55 : 1)
+        .contentShape(Rectangle())
+        .onTapGesture { if !ex { toggle(s) } }
+    }
+
+    private func albumRow(_ a: CollectionItem) -> some View {
+        HStack(spacing: 10) {
+            ArtworkImage(urlString: a.art(120, 120), size: 44, corner: 8)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(a.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(a.sub).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            if loadingAlbum {
+                ProgressView()
+            } else {
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard !loadingAlbum else { return }
+            loadingAlbum = true
+            Task {
+                let (_, tr) = (try? await api.collectionTracks(kind: "album", id: a.id)) ?? (nil, [])
+                albumTracks = tr
+                albumName = a.title
+                loadingAlbum = false
+            }
+        }
+    }
+
+    private func addPicked() {
+        guard !picked.isEmpty else { return }
+        adding = true
+        let songs = picked
+        Task {
+            var done: [Song] = []
+            for s in songs {
+                if (try? await api.addToPlaylist(pid: playlistId, song: s)) != nil { done.append(s) }
+            }
+            adding = false
+            if done.isEmpty {
+                player.showToast(settings.t("add_fail"))
+            } else {
+                player.showToast(settings.t("added_to"))
+                onAdded(done)
+                dismiss()
+            }
+        }
+    }
+}
