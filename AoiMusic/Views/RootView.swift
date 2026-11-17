@@ -27,6 +27,14 @@ struct RootView: View {
     var body: some View {
         ZStack {
             background
+            // The engine's web view hosts at FULL size behind everything
+            // (v108): at 1x1 WebKit treats the page as barely visible and
+            // may throttle its timers and media pipeline, which the
+            // playback engine depends on. Invisible, but full-size.
+            EngineHost(webView: engine.webView)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .opacity(0.01)
+                .allowsHitTesting(false)
             HStack(spacing: 10) {
                 rail
                 content
@@ -57,10 +65,6 @@ struct RootView: View {
                 .zIndex(5)
             }
             ToastOverlay(text: player.toast)
-            EngineHost(webView: engine.webView)
-                .frame(width: 1, height: 1)
-                .opacity(0.01)
-                .allowsHitTesting(false)
         }
         .animation(.easeInOut(duration: 0.28), value: nav.detail)
         .fullScreenCover(isPresented: $nav.showNowPlaying) {
