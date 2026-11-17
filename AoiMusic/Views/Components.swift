@@ -695,10 +695,12 @@ struct GlyphGlassIcon: View {
         let glyph = Image(systemName: icon)
             .font(.system(size: size, weight: weight))
         ZStack {
-            Rectangle()
-                .fill(.white.opacity(0.001))
-                .glassEffect(.clear.interactive(), in: .rect(cornerRadius: 2))
-                .mask { glyph }
+            if #available(iOS 26.0, *) {
+                Rectangle()
+                    .fill(.white.opacity(0.001))
+                    .glassEffect(.clear.interactive(), in: .rect(cornerRadius: 2))
+                    .mask { glyph }
+            }
             glyph
                 .foregroundStyle(
                     LinearGradient(colors: [tint.opacity(0.92), tint.opacity(0.5)],
@@ -803,7 +805,7 @@ struct AddSongsSheet: View {
             } else {
                 Image(systemName: isPicked(s) ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 22))
-                    .foregroundStyle(isPicked(s) ? settings.accent : .tertiary)
+                    .foregroundStyle(isPicked(s) ? settings.accent : Color.secondary)
             }
         }
         .padding(.vertical, 5)
