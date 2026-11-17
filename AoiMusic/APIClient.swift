@@ -148,7 +148,9 @@ final class APIClient: ObservableObject {
         var seen = Set<String>()
         return out.filter { item in
             guard !item.id.isEmpty, seen.insert(item.id).inserted else { return false }
-            return !item.title.isEmpty || item.attributes?.artwork?.url != nil
+            // v113: require a title - artwork-only entries rendered as
+            // ghost cells in the grids.
+            return !item.title.trimmingCharacters(in: .whitespaces).isEmpty
         }
     }
 
@@ -164,7 +166,9 @@ final class APIClient: ObservableObject {
         for g in r?.data ?? [] {
             let items = (g.relationships?.contents?.data ?? []).filter { item in
                 guard !item.id.isEmpty, item.type != "songs", seen.insert(item.id).inserted else { return false }
-                return !item.title.isEmpty || item.attributes?.artwork?.url != nil
+                // v113: require a title - artwork-only entries rendered as
+            // ghost cells in the grids.
+            return !item.title.trimmingCharacters(in: .whitespaces).isEmpty
             }
             if !items.isEmpty {
                 groups.append((g.attributes?.title ?? g.attributes?.name ?? "", items))
