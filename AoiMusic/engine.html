@@ -13,7 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.3';
+window.ENGINE_VERSION = '109.4';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -188,6 +188,26 @@ function parseUnresolved(e) {
   return m[1].split(',').map(s => s.trim()).filter(Boolean);
 }
 
+function queuePosition() {
+  try {
+    const p = music && music.queue && music.queue.position;
+    return (typeof p === 'number' && isFinite(p)) ? p : -1;
+  } catch (e) { return -1; }
+}
+// Is the player verifiably sitting on index i of id list `ids`?
+// true/false when MusicKit can tell us, null when it cannot.
+function atTarget(i, ids) {
+  const pos = queuePosition();
+  if (pos >= 0) return pos === i;
+  try {
+    const it = music && music.nowPlayingItem;
+    const curId = it ? String(it.id || '') : '';
+    const want = (ids && ids[i] != null) ? String(ids[i]) : '';
+    if (curId && want) return curId === want;
+  } catch (e) {}
+  return null;
+}
+
 window.AoiEngine = {
   async authorize() {
     if (!music) { post({ type: 'error', where: 'authorize', message: 'engine not ready' }); return; }
@@ -208,31 +228,26 @@ window.AoiEngine = {
     const token = ++queueReqToken;
     return op(async () => {
       // Coalescing: if a NEWER playQueue was requested while this one
-      // waited its turn, skip it — only the latest queue matters, and
-      // executing stale loads back to back is what makes rapid
-      // switching feel stuck. (Observability + this skip were the
-      // Codex review's two adopted suggestions.)
+      // waited its turn, skip it - only the latest queue matters.
       if (token !== queueReqToken) { post({ type: 'log', message: 'playQueue superseded, skipped' }); return; }
       const t0 = Date.now();
       appShuffle = sh; appRepeat = rp;
+      const targetId = String(ids[start]);
       // v109 jump-first: if the requested list IS the queue MusicKit
       // already holds (same ids, same order) and shuffle is off, jump
-      // inside it instead of paying a full setQueue reload - the v108
-      // on-device diagnostics measured a setQueue settle at 9-55s,
-      // which is what made switching inside an album feel broken. The
-      // web app's player used the same trick. Any mismatch, shuffle
-      // being on, or a failed jump falls back to the full reload.
+      // inside it instead of paying a full setQueue reload. Any
+      // mismatch, shuffle being on, or a failed jump falls back to the
+      // full reload below.
       let jumped = false;
-      let jumpErr = null;
       if (!sh) {
         const cur = loadedQueueIds();
         if (cur.length === ids.length && cur.every((v, i) => v === String(ids[i]))) {
           const tJump = Date.now();
+          let jumpErr = null;
           for (let j = 0; j < 2 && !jumped; j++) {
             try {
               await music.changeToMediaAtIndex(start);
               jumped = true;
-              post({ type: 'log', message: 'playQueue: same queue, jump to ' + start + ' settled in ' + (Date.now() - tJump) + 'ms' });
             } catch (e) {
               jumpErr = e;
               post({ type: 'log', message: 'jump attempt ' + (j + 1) + ' failed: ' + String((e && e.message) || e) });
@@ -240,17 +255,25 @@ window.AoiEngine = {
           }
           // v109.2: an ABORTED jump must not escalate into a full
           // setQueue reload - on device that turned one interrupted
-          // jump into an 81s reload (2026-11-17 12:50 log). An abort
-          // means the load was interrupted, not that the queue is
-          // wrong: if the loaded queue is still exactly this list,
-          // skip the reload and just play. Non-abort jump errors keep
-          // the old behaviour (reload below) - something is genuinely
-          // wrong with jumping, and the reload at least plays.
+          // jump into an 81s reload (2026-11-17 12:50 log). If the
+          // loaded queue is still exactly this list, excuse the abort.
           if (!jumped && jumpErr && isAbort(jumpErr)) {
             const cur2 = loadedQueueIds();
             if (cur2.length === ids.length && cur2.every((v, i) => v === String(ids[i]))) {
               jumped = true;
               post({ type: 'log', message: 'jump aborted, queue intact - skipping reload' });
+            }
+          }
+          if (jumped) {
+            // v109.4: a jump that verifiably did NOT land on the
+            // target is not a jump at all - the 17:17 diagnostics
+            // showed the post-setQueue variant of this playing the
+            // wrong song outright. Reload instead of playing wrong.
+            if (atTarget(start, ids) === false) {
+              jumped = false;
+              post({ type: 'log', message: 'jump did not land on target (position ' + queuePosition() + ' != ' + start + '), reloading' });
+            } else {
+              post({ type: 'log', message: 'playQueue: same queue, jump to ' + start + ' settled in ' + (Date.now() - tJump) + 'ms' });
             }
           }
           if (!jumped && jumpErr && !isAbort(jumpErr)) {
@@ -259,24 +282,36 @@ window.AoiEngine = {
         }
       }
       let playIndex = start;
+      let attemptIds = ids.slice();
       if (!jumped) {
-        post({ type: 'log', message: 'playQueue start (' + ids.length + ' songs @' + start + ')' });
+        // v109.4: when the target is the head of the queue, let
+        // setQueue start playback itself (startPlaying) instead of a
+        // separate play() round - the 17:17 log priced that round at
+        // ~4.9s. Only at index 0: starting playback at the head and
+        // THEN jumping would briefly play the wrong song.
+        const useStartPlaying = playIndex === 0;
+        post({ type: 'log', message: 'playQueue start (' + ids.length + ' songs @' + start + (useStartPlaying ? ', startPlaying' : '') + ')' });
         const tQ = Date.now();
         // v109.1 drop-and-retry: MusicKit rejects the WHOLE setQueue
-        // when even one id cannot be resolved in this storefront
-        // (observed on device 2026-11-17: a 38-song list died on one
-        // CN-unavailable track, its id named in the error). Drop the
-        // named ids, shift the start index left past any drops before
-        // it, and retry - the rest of the list plays instead of
-        // nothing at all. Non-resolution errors are not retried.
-        let attemptIds = ids.slice();
+        // when even one id cannot be resolved in this storefront.
+        // Drop the named ids, shift the start index left past any
+        // drops before it, and retry - UNLESS the dropped id is the
+        // song she actually tapped (v109.4): then stop and say so,
+        // never substitute a neighbour silently.
         for (let attempt = 0; ; attempt++) {
           try {
-            await music.setQueue({ songs: attemptIds, startIndex: playIndex });
+            const desc = { songs: attemptIds, startIndex: playIndex };
+            if (useStartPlaying) desc.startPlaying = true;
+            await music.setQueue(desc);
             break;
           } catch (e) {
             const bad = parseUnresolved(e);
             if (!bad.length || attempt >= 3) throw e;
+            if (bad.indexOf(targetId) >= 0) {
+              post({ type: 'log', message: 'playQueue: target song ' + targetId + ' unavailable in this storefront, not playing a substitute' });
+              post({ type: 'error', where: 'playQueue', message: 'target unavailable: ' + targetId });
+              return;
+            }
             let removedBefore = 0;
             const kept = [];
             for (let i = 0; i < attemptIds.length; i++) {
@@ -292,14 +327,31 @@ window.AoiEngine = {
         }
         post({ type: 'log', message: 'setQueue settled in ' + (Date.now() - tQ) + 'ms' });
       }
-      // Apply the CAPTURED modes, not the globals: setShuffle/setRepeat
-      // may have run during the await and rewritten the globals (the
-      // residual race the Codex review caught in round 2).
+      // Apply the CAPTURED modes, not the globals.
       music.shuffleMode = sh ? 1 : 0;
       music.repeatMode = mkRepeat(rp);
       if (!jumped && playIndex > 0) {
-        try { await music.changeToMediaAtIndex(playIndex); }
-        catch (e) { post({ type: 'log', message: 'jump after setQueue failed: ' + String((e && e.message) || e) }); }
+        // v109.4: reaching the target is now verified, not assumed.
+        // The pre-109.4 code caught a failed jump, logged it, and
+        // played anyway - from whatever index the queue happened to
+        // sit on (17:17 diagnostics: 'jump after setQueue failed:
+        // The operation was aborted', then the wrong song played).
+        // Retry the jump; then, when MusicKit can report its
+        // position, refuse to play if we are verifiably elsewhere.
+        let ok = false;
+        for (let j = 0; j < 2 && !ok; j++) {
+          try { await music.changeToMediaAtIndex(playIndex); ok = true; }
+          catch (e) { post({ type: 'log', message: 'jump after setQueue attempt ' + (j + 1) + ' failed: ' + String((e && e.message) || e) }); }
+        }
+        if (!sh) {
+          const at = atTarget(playIndex, attemptIds);
+          if (at === true) ok = true;
+          if (at === false || !ok) {
+            post({ type: 'log', message: 'target index ' + playIndex + ' not reached (position ' + queuePosition() + ') - refusing to play the wrong song' });
+            post({ type: 'error', where: 'playQueue', message: 'target index not reached' });
+            return;
+          }
+        }
       }
       const tPlay = Date.now();
       await music.play();
