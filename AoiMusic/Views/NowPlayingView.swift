@@ -31,6 +31,7 @@ struct NowPlayingView: View {
     @State private var motionURLStr: String?
     @State private var motionSongId: String = ""
     @State private var palette: CoverPalette?
+    @State private var dismissDrag: CGFloat = 0
 
     // Text follows the cover: white on dark covers, ink on light ones.
     private var fg: Color { palette?.isDark == false ? Color(red: 0.10, green: 0.10, blue: 0.12) : .white }
@@ -40,11 +41,31 @@ struct NowPlayingView: View {
         ZStack {
             background
             VStack(spacing: 12) {
-                Capsule()
-                    .fill(fg.opacity(0.5))
-                    .frame(width: 44, height: 5)
-                    .padding(.top, 10)
-                    .onTapGesture { nav.showNowPlaying = false }
+                // v114: the grabber zone is a wide handle area - a tap
+                // dismisses, and a downward drag starting here pulls
+                // the whole page with the finger (not far enough =
+                // springs back).
+                ZStack {
+                    Capsule()
+                        .fill(fg.opacity(0.5))
+                        .frame(width: 44, height: 5)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 40)
+                .contentShape(Rectangle())
+                .onTapGesture { nav.showNowPlaying = false }
+                .gesture(
+                    DragGesture(minimumDistance: 4)
+                        .onChanged { v in dismissDrag = max(v.translation.height, 0) }
+                        .onEnded { v in
+                            if v.translation.height > 90 {
+                                nav.showNowPlaying = false
+                                dismissDrag = 0
+                            } else {
+                                withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) { dismissDrag = 0 }
+                            }
+                        }
+                )
                 Spacer()
                 middle
                 titleRow
@@ -55,6 +76,7 @@ struct NowPlayingView: View {
                 pills
                 Spacer(minLength: 6)
             }
+            .offset(y: max(dismissDrag, 0))
             .padding(.horizontal, 22)
             .padding(.top, 36)
             .padding(.bottom, 10)
@@ -76,10 +98,30 @@ struct NowPlayingView: View {
                          palette?.bottom ?? Color(red: 0.12, green: 0.10, blue: 0.16)],
                 startPoint: .top, endPoint: .bottom)
             Circle()
-                .fill((palette?.glow ?? settings.accent).opacity(0.40))
+                .fill((palette?.glow ?? settings.accent).opacity(0.55))
                 .frame(width: 340, height: 340)
                 .blur(radius: 90)
                 .offset(x: 130, y: -300)
+            Circle()
+                .fill((palette?.glow ?? settings.accent).opacity(0.30))
+                .frame(width: 300, height: 300)
+                .blur(radius: 95)
+                .offset(x: -140, y: 320)
+            // Specular rake + vignette, same light language as the
+            // app backdrop (v114).
+            Rectangle()
+                .fill(LinearGradient(colors: [.clear, .white.opacity(0.13), .clear],
+                                     startPoint: .leading, endPoint: .trailing))
+                .frame(width: 700, height: 170)
+                .rotationEffect(.degrees(-24))
+                .blur(radius: 26)
+                .offset(y: -260)
+            GeometryReader { geo in
+                RadialGradient(colors: [.clear, .black.opacity(0.13)],
+                               center: .center,
+                               startRadius: geo.size.width * 0.40,
+                               endRadius: geo.size.width * 0.95)
+            }
         }
         .ignoresSafeArea()
     }
@@ -236,19 +278,16 @@ struct NowPlayingView: View {
             Spacer()
             if let cur = player.current {
                 ShareLink(item: URL(string: cur.attributes?.url ?? "https://music.apple.com/\(api.storefront)/song/\(cur.playbackId)")!) {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(fg)
+                    GlyphGlassIcon(icon: "square.and.arrow.up", size: 21, tint: fg)
                         .frame(width: 46, height: 46)
-                        .aoiGlass(corner: 14, interactive: true)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 Button { player.toggleFav(cur, lang: settings.lang) } label: {
-                    Image(systemName: player.isFav(cur) ? "heart.fill" : "heart")
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(player.isFav(cur) ? settings.accent : fg)
+                    GlyphGlassIcon(icon: player.isFav(cur) ? "heart.fill" : "heart", size: 21,
+                                   tint: player.isFav(cur) ? settings.accent : fg)
                         .frame(width: 46, height: 46)
-                        .aoiGlass(corner: 14, interactive: true)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .onAppear { player.hydrateFav(cur) }
@@ -269,7 +308,7 @@ struct NowPlayingView: View {
             HStack {
                 Text(fmt(player.currentTime)).font(.caption).foregroundStyle(fg.opacity(0.7))
                 Spacer()
-                Text(player.useEngine ? settings.t("full") : settings.t("preview"))
+                Text(player.useEngine && !player.isPreviewClip ? settings.t("full") : settings.t("preview"))
                     .font(.caption.weight(.medium)).foregroundStyle(fg.opacity(0.7))
                 Spacer()
                 Text("-" + fmt(max(player.duration - player.currentTime, 0))).font(.caption).foregroundStyle(fg.opacity(0.7))
@@ -282,11 +321,9 @@ struct NowPlayingView: View {
             ctlButton("shuffle", on: player.shuffle) { player.toggleShuffle(); player.showToast(settings.t(player.shuffle ? "shuffle_on" : "shuffle_off")) }
             ctlButton("backward.fill", big: false) { player.prev() }
             Button { player.togglePlay() } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 30, weight: .bold))
-                    .foregroundStyle(fg)
+                GlyphGlassIcon(icon: player.isPlaying ? "pause.fill" : "play.fill", size: 34, weight: .bold, tint: fg)
                     .frame(width: 74, height: 74)
-                    .aoiGlass(corner: 24, interactive: true)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             ctlButton("forward.fill", big: false) { player.next() }
@@ -307,11 +344,9 @@ struct NowPlayingView: View {
 
     private func ctlButton(_ icon: String, big: Bool = false, on: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(on ? settings.accent : fg)
+            GlyphGlassIcon(icon: icon, size: 21, tint: on ? settings.accent : fg)
                 .frame(width: 52, height: 52)
-                .aoiGlass(corner: 17, interactive: true)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
