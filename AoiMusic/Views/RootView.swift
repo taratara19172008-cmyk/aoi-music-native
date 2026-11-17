@@ -35,6 +35,12 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .opacity(0.01)
                 .allowsHitTesting(false)
+            // v110: the playback engine's web view (a real Pages page),
+            // hosted the same way - full size, invisible, no hit testing.
+            EngineHost(webView: player.playback.webView)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .opacity(0.01)
+                .allowsHitTesting(false)
             HStack(spacing: 10) {
                 rail
                 content
