@@ -51,6 +51,11 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         let ucc = WKUserContentController()
         config.userContentController = ucc
         webView = WKWebView(frame: .zero, configuration: config)
+        // v112: transparent - the engine page paints nothing, and the
+        // SwiftUI root keeps it at full opacity so WebKit treats the
+        // page as genuinely visible (see RootView).
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
         super.init()
         ucc.add(self, name: "aoi")
         webView.uiDelegate = self
@@ -174,6 +179,10 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
 
     // MARK: - Swift -> JS
     private func call(_ js: String) {
+        // v112: commands sent before the engine is ready are silently
+        // dropped by the `window.AoiEngine &&` guard in each call -
+        // log them so a lost command is at least visible in the log.
+        if !ready { logEvent("call before ready (guard will drop): " + String(js.prefix(48))) }
         DispatchQueue.main.async { [weak self] in
             // void(): engine methods return Promises, and evaluateJavaScript
             // cannot bridge a Promise result - it reported "unsupported
@@ -273,6 +282,10 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         logEvent("web content process terminated, reloading engine")
         ready = false
         pageLoaded = false
+        // v112: the reloaded page is a NEW JS environment - do not let
+        // the old page's authorization stand in for it. The engine
+        // re-posts its auth state after configure.
+        authorized = false
         webView.reload()
     }
     private static func topPresenter() -> UIViewController? {
