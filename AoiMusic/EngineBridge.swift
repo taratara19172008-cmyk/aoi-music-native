@@ -150,12 +150,8 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     func pause() { call("window.AoiEngine && AoiEngine.pause()") }
     func next() { call("window.AoiEngine && AoiEngine.next()") }
     func prev() { call("window.AoiEngine && AoiEngine.prev()") }
-    func jumpTo(_ i: Int, expectedId: String? = nil) {
-        if let e = expectedId {
-            call("window.AoiEngine && AoiEngine.jumpTo(\(i), \(jsString(e)))")
-        } else {
-            call("window.AoiEngine && AoiEngine.jumpTo(\(i))")
-        }
+    func jumpTo(_ i: Int) {
+        call("window.AoiEngine && AoiEngine.jumpTo(\(i))")
     }
     func seek(_ sec: Double) { call("window.AoiEngine && AoiEngine.seek(\(sec))") }
     func callStation(_ id: String) { call("window.AoiEngine && AoiEngine.playStation(\(jsString(id)))") }

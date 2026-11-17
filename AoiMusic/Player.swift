@@ -35,29 +35,13 @@ final class Player: ObservableObject {
     private var timeObserver: Any?
     private var favChecked: Set<String> = []
     private var toastWork: DispatchWorkItem?
-    // Last play request sent to the engine, watched until the engine confirms
-    // it (matching item event or playing state). One silent re-issue if the
-    // confirmation never comes — a second safety net under the engine's own
-    // intent runner, for calls lost before they ever reached the page.
-    private var pendingPlay: (ids: [String], start: Int, station: String?, issuedAt: Date, retried: Bool)?
-    private var watchdogTimer: Timer?
-
-    private func startWatchdog() {
-        watchdogTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            guard let self = self, let p = self.pendingPlay else { return }
-            let age = Date().timeIntervalSince(p.issuedAt)
-            if age > 20 {
-                self.pendingPlay = nil
-            } else if age > 6, !p.retried {
-                self.pendingPlay = (p.ids, p.start, p.station, Date(), true)
-                if let st = p.station {
-                    self.engine.callStation(st)
-                } else {
-                    self.engine.playQueue(ids: p.ids, start: p.start, shuffle: self.shuffle, repeatMode: self.repeatMode)
-                }
-            }
-        }
-    }
+    // v108: the 6-second re-issue watchdog that used to live here is GONE.
+    // On a slow network the engine legitimately needs longer than that to
+    // start a new queue; re-sending the whole playQueue mid-load restarted
+    // the load and, together with the engine's own (also removed)
+    // verification jumps, broke track switching while the first play of a
+    // session worked. One mechanism only now: the engine's serialized op
+    // chain, exactly like the web app.
 
     init(engine: EngineBridge, api: APIClient) {
         self.engine = engine
@@ -70,7 +54,6 @@ final class Player: ObservableObject {
         favSet = Set(favSongs.map { "s:" + $0.playbackId })
         favAlbums = Self.loadJSON("aoi-fav-albums", [CollectionItem].self) ?? []
         setupEngine()
-        startWatchdog()
         setupPreview()
         setupRemote()
         setupWidgetCommands()
@@ -99,7 +82,6 @@ final class Player: ObservableObject {
         engine.onState = { [weak self] playing in
             guard let self = self, self.useEngine else { return }
             self.isPlaying = playing
-            if playing { self.pendingPlay = nil }
             self.updateNowPlayingInfo()
         }
         engine.onProgress = { [weak self] t, d, playing in
@@ -110,9 +92,6 @@ final class Player: ObservableObject {
         }
         engine.onItem = { [weak self] item in
             guard let self = self, self.useEngine, let item = item else { return }
-            if let p = self.pendingPlay, p.station == nil, p.ids.indices.contains(p.start), p.ids[p.start] == item.id {
-                self.pendingPlay = nil
-            }
             if let idx = self.queue.firstIndex(where: { $0.playbackId == item.id || $0.id == item.id }) {
                 if idx != self.index { self.index = idx }
                 self.current = self.queue[idx]
@@ -124,24 +103,12 @@ final class Player: ObservableObject {
             if let c = self.current { self.recordHistory(c) }
             self.updateNowPlayingInfo()
         }
-        engine.onQueue = { [weak self] ids in
-            guard let self = self, self.useEngine, !ids.isEmpty else { return }
-            // The engine's queue is the truth: MusicKit may have dropped
-            // items it could not resolve. Rebuild our queue in the engine's
-            // order so indices and highlighting agree with what plays.
-            guard let curId = self.current?.playbackId, ids.contains(curId) else { return }
-            let byId = Dictionary(self.queue.map { ($0.playbackId, $0) }, uniquingKeysWith: { a, _ in a })
-            let rebuilt = ids.compactMap { byId[$0] }
-            guard !rebuilt.isEmpty else { return }
-            self.queue = rebuilt
-            if let i = rebuilt.firstIndex(where: { $0.playbackId == curId }) { self.index = i }
-        }
         engine.onError = { [weak self] kind in
             // Only a failed playback attempt may surface the "playback failed" toast,
             // and only if nothing actually started playing shortly after (the engine
             // reports superseded-operation errors that are not real failures).
             guard let self = self, kind == "playQueue" || kind == "station" else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
                 guard let self = self, self.useEngine, !self.isPlaying else { return }
                 self.showToast(Strings.get("play_fail", self.lang))
             }
@@ -221,7 +188,6 @@ final class Player: ObservableObject {
             useEngine = true
             av.pause()
             let ids = list.map { $0.playbackId }
-            pendingPlay = (ids, startAt, nil, Date(), false)
             engine.playQueue(ids: ids, start: startAt, shuffle: shuffle, repeatMode: repeatMode)
             isPlaying = true
         } else {
@@ -305,7 +271,7 @@ final class Player: ObservableObject {
         // first song just kept playing. When in doubt, send the jump.
         if i == index, current?.playbackId == queue[i].playbackId { return }
         if useEngine {
-            engine.jumpTo(i, expectedId: queue[i].playbackId)
+            engine.jumpTo(i)
             index = i
             current = queue[i]
             recordHistory(queue[i])
@@ -338,7 +304,6 @@ final class Player: ObservableObject {
         // so stations are handled by a dedicated JS call:
         useEngine = true
         av.pause()
-        pendingPlay = ([], 0, st.id, Date(), false)
         engine.callStation(st.id)
         isPlaying = true
     }
@@ -404,11 +369,23 @@ final class Player: ObservableObject {
         }
         persistFavs()
     }
+    // Hydration guards (v108): a row appearance used to fire up to two
+    // ratings requests per song, and an inconclusive answer retried on
+    // EVERY appearance — scrolling a long list meant a request storm
+    // competing with everything else. In-flight keys are never
+    // duplicated, and an unknown answer backs off for two minutes.
+    private var favHydrating: Set<String> = []
+    private var favUnknownAt: [String: Date] = [:]
+
     func hydrateFav(_ song: Song) {
         let key = favKey(song)
         if favSet.contains(key) { return }
         guard !favChecked.contains(key) else { return }
+        guard !favHydrating.contains(key) else { return }
+        if let t = favUnknownAt[key], Date().timeIntervalSince(t) < 120 { return }
+        favHydrating.insert(key)
         Task {
+            defer { favHydrating.remove(key) }
             var known: Bool? = nil
             if let v = await api.ratingState(kind: "songs", id: song.playbackId) { known = v }
             if known != true, song.type == "library-songs" || song.id != song.playbackId {
@@ -416,21 +393,35 @@ final class Player: ObservableObject {
                     known = (known ?? false) || v
                 }
             }
-            // Unknown (network/auth hiccup): do NOT mark checked and do NOT clear
-            // anything — the next appearance retries. Only a definitive answer
+            // Unknown (network/auth hiccup): do NOT mark checked and do NOT
+            // clear anything — but back off (favUnknownAt) instead of
+            // retrying on every row appearance. Only a definitive answer
             // is cached for the session.
-            guard let loved = known else { return }
+            guard let loved = known else { favUnknownAt[key] = Date(); return }
             favChecked.insert(key)
             if loved { applyFav(song, loved: true) }
         }
     }
+    // Favorite writes serialize per song (v108): rapid heart taps used
+    // to spawn a storm of racing write tasks — each with its own stale
+    // snapshot of the state, each completion reverting the others — and
+    // the churn froze the app until iOS killed it (her report:连点收藏
+    // 卡住然后闪退). Now a tap only records the DESIRED state and flips
+    // the heart at once; ONE worker per song walks Apple's state to the
+    // latest desire and reports once when it settles.
+    private var favDesired: [String: Bool] = [:]
+    private var favBusy: Set<String> = []
+
     func toggleFav(_ song: Song, lang: String) {
         guard engine.authorized else { showToast(Strings.get("need_acct_fav", lang)); return }
         let key = favKey(song)
-        let was = favSet.contains(key)
-        applyFav(song, loved: !was)
-        // Ratings live in two id spaces; write both so the love sticks no matter
-        // which form of the song Apple checks later.
+        let firstTarget = !favSet.contains(key)
+        applyFav(song, loved: firstTarget)
+        favDesired[key] = firstTarget
+        guard !favBusy.contains(key) else { return }
+        favBusy.insert(key)
+        // Ratings live in two id spaces; write both so the love sticks no
+        // matter which form of the song Apple checks later.
         var targets: [(String, String)] = []
         if song.type == "library-songs" {
             targets.append(("library-songs", song.id))
@@ -439,19 +430,27 @@ final class Player: ObservableObject {
             targets.append(("songs", song.playbackId))
         }
         Task {
-            var ok = false
-            for (kind, tid) in targets {
-                if was {
-                    if (try? await api.rateDelete(kind: kind, id: tid)) != nil { ok = true }
-                } else {
-                    if (try? await api.rateWrite(kind: kind, id: tid)) != nil { ok = true }
+            var written: Bool? = nil
+            var failed = false
+            while let want = favDesired[key] {
+                favDesired.removeValue(forKey: key)
+                var ok = false
+                for (kind, tid) in targets {
+                    if want {
+                        if (try? await api.rateWrite(kind: kind, id: tid)) != nil { ok = true }
+                    } else {
+                        if (try? await api.rateDelete(kind: kind, id: tid)) != nil { ok = true }
+                    }
                 }
+                if ok { written = want } else { failed = true; break }
             }
-            if ok {
-                showToast(Strings.get(was ? "unfaved" : "faved", lang))
-            } else {
-                applyFav(song, loved: was)
+            favBusy.remove(key)
+            if failed {
+                favDesired.removeValue(forKey: key)
+                applyFav(song, loved: written ?? !firstTarget)
                 showToast(Strings.get("fav_fail", lang))
+            } else if let w = written {
+                showToast(Strings.get(w ? "faved" : "unfaved", lang))
             }
         }
     }
@@ -472,22 +471,36 @@ final class Player: ObservableObject {
         }
         persistFavAlbums()
     }
+    private var favAlbumDesired: [String: Bool] = [:]
+    private var favAlbumBusy: Set<String> = []
+
     func toggleFavAlbum(_ item: CollectionItem, lang: String) {
         guard engine.authorized else { showToast(Strings.get("need_acct_fav", lang)); return }
-        let was = isFavAlbum(item.id)
-        applyFavAlbum(item, loved: !was)
+        let firstTarget = !isFavAlbum(item.id)
+        applyFavAlbum(item, loved: firstTarget)
+        favAlbumDesired[item.id] = firstTarget
+        guard !favAlbumBusy.contains(item.id) else { return }
+        favAlbumBusy.insert(item.id)
         Task {
-            var ok = false
-            if was {
-                if (try? await api.rateDelete(kind: "albums", id: item.id)) != nil { ok = true }
-            } else {
-                if (try? await api.rateWrite(kind: "albums", id: item.id)) != nil { ok = true }
+            var written: Bool? = nil
+            var failed = false
+            while let want = favAlbumDesired[item.id] {
+                favAlbumDesired.removeValue(forKey: item.id)
+                var ok = false
+                if want {
+                    if (try? await api.rateWrite(kind: "albums", id: item.id)) != nil { ok = true }
+                } else {
+                    if (try? await api.rateDelete(kind: "albums", id: item.id)) != nil { ok = true }
+                }
+                if ok { written = want } else { failed = true; break }
             }
-            if ok {
-                showToast(Strings.get(was ? "unfaved" : "faved", lang))
-            } else {
-                applyFavAlbum(item, loved: was)
+            favAlbumBusy.remove(item.id)
+            if failed {
+                favAlbumDesired.removeValue(forKey: item.id)
+                applyFavAlbum(item, loved: written ?? !firstTarget)
                 showToast(Strings.get("fav_fail", lang))
+            } else if let w = written {
+                showToast(Strings.get(w ? "faved" : "unfaved", lang))
             }
         }
     }
