@@ -10,6 +10,23 @@ workflows:
         script: |
           xcodebuild -project AoiMusic.xcodeproj -scheme AoiMusic -configuration Release -sdk iphoneos \
             -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Embed entitlements (ad-hoc sign)
+        script: |
+          APP=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "APP=$APP"
+          test -n "$APP"
+          # An unsigned build leaves the binaries WITHOUT their
+          # entitlements blob, so a re-signer (SideStore) cannot see
+          # the App Group and drops it from the profile it generates -
+          # the widget's data channel then never exists (v108
+          # diagnostics: signature lacks App Group). Ad-hoc sign both
+          # targets WITH their .entitlements files (inside-out:
+          # extension first) purely to embed the entitlements into the
+          # binaries; the installer re-signs everything anyway.
+          codesign -f -s - --timestamp=none --entitlements AoiWidget/AoiWidget.entitlements "$APP/PlugIns/AoiWidget.appex"
+          codesign -f -s - --timestamp=none --entitlements AoiMusic/AoiMusic.entitlements "$APP"
+          echo "--- embedded app entitlements ---"
+          codesign -d --entitlements :- "$APP" 2>/dev/null | grep -A2 application-groups
       - name: Package IPA
         script: |
           APP=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)

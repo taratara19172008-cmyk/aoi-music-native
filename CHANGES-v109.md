@@ -20,6 +20,10 @@ playQueue 的 op 内新增 jump-first：请求列表与 MusicKit 已装载队列
 
 `call()` 的 JS 统一包 `void (...)`：引擎方法返回 Promise，evaluateJavaScript 无法桥接 Promise 结果，每次传输调用都报 unsupported type（命令其实都执行了）。authorize() 早已用 void 包裹，本次推广到全部调用。日志从此只剩真信号。
 
+## 4. 构建补嵌 App Group 权益（codemagic.yaml，用户 12:16 追问）
+
+查明小组件签名的断点：项目里主应用与组件的 .entitlements 都正确声明了 group.com.aoimusic.app，但 Codemagic 未签名构建（CODE_SIGNING_ALLOWED=NO）不把权益嵌进二进制（验过 v108 IPA：两个二进制均无 application-groups、无描述文件），SideStore 重签时读不到这个组、生成的描述文件里自然没有它。构建新增一步：打包前对组件和主应用做临时签名（ad-hoc + 各自 entitlements，内层先签），只为把权益嵌进二进制供重签方识别；构建日志打印主应用已嵌权益验明。SideStore 免费团队是否放行注册仍属未知，装机后看设置页诊断行定论。
+
 ## 未动
 
 登录/授权/init 路径、Player 传输层、串行 op 链与合并逻辑（v108 已验）、小组件、图标、电台布局、专辑页歌手跳转、收藏工人、MarqueeText 缓存。
