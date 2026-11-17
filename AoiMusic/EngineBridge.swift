@@ -11,17 +11,8 @@ struct EngineItem: Decodable {
     var duration: Double?
 }
 
-enum EngineMode { case auth, playback }
-
 final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
     static let engineBaseURL = URL(string: "https://music.apple.com")!
-    // v110: the playback engine is a REAL page on GitHub Pages - the same
-    // origin family as the web app, which plays instantly in Safari,
-    // while the bundled loadHTMLString page crawls. The auth bridge
-    // (bundled page) keeps doing login exactly as before; this bridge
-    // only plays, with the user token injected by the app.
-    static let playbackEngineURL = URL(string: "https://taratara19172008-cmyk.github.io/aoi-music/player-engine.html")!
-    let mode: EngineMode
     let webView: WKWebView
     @Published var ready = false
     @Published var authorized = false
@@ -41,8 +32,6 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     var onProgress: ((Double, Double, Bool) -> Void)?
     var onError: ((String) -> Void)?
     var onQueue: (([String]) -> Void)?
-    var onAuth: ((Bool, String) -> Void)?
-    private var pendingToken: String?
 
     func logEvent(_ s: String) {
         var lines = lastError.isEmpty ? [] : lastError.components(separatedBy: "\n")
@@ -54,8 +43,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     private var popupVC: UIViewController?
     private var popupWebView: WKWebView?
 
-    init(mode: EngineMode = .auth) {
-        self.mode = mode
+    init() {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
@@ -67,19 +55,6 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         ucc.add(self, name: "aoi")
         webView.uiDelegate = self
         webView.navigationDelegate = self
-        if mode == .playback {
-            // v110 playback engine: load the real Pages page (no cache,
-            // so Pages pushes apply on the next launch). No bundled
-            // fallback and no authorize popup of its own - if the page
-            // cannot load, Player keeps routing transport to the auth
-            // engine, which still plays (slowly) exactly like v109.
-            engineSource = "远程页面"
-            let req = URLRequest(url: Self.playbackEngineURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
-            webView.load(req)
-            logEvent("playback engine loading")
-            probeTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in self?.probe() }
-            return
-        }
         // v109: load the newest engine available - the online-updated
         // cache if one was downloaded, else the bundled page - always
         // through the same loadHTMLString + music.apple.com base URL
@@ -170,13 +145,11 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         case "ready":
             ready = true
             logEvent("engine ready")
-            applyPendingToken()
             if pendingAuthorize { pendingAuthorize = false; authorize() }
         case "auth":
             authorized = (body["authorized"] as? Bool) ?? false
             storefront = (body["storefront"] as? String) ?? ""
             userToken = (body["token"] as? String) ?? ""
-            onAuth?(authorized, userToken)
         case "state":
             onState?((body["isPlaying"] as? Bool) ?? false)
         case "item":
@@ -234,17 +207,6 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         }
     }
     func unauthorize() { call("window.AoiEngine && AoiEngine.unauthorize()") }
-    // v110: hand the login engine's user token to the playback engine.
-    // Stashed until the page is ready, then applied (and re-applied if
-    // the token changes, e.g. after a re-login).
-    func setUserToken(_ token: String) {
-        pendingToken = token
-        if ready { applyPendingToken() }
-    }
-    private func applyPendingToken() {
-        guard let t = pendingToken else { return }
-        call("window.AoiEngine && AoiEngine.setUserToken(\(jsString(t)))")
-    }
     func playQueue(ids: [String], start: Int, shuffle: Bool, repeatMode: Int) {
         let arr = ids.map { jsString($0) }.joined(separator: ",")
         call("window.AoiEngine && AoiEngine.playQueue([\(arr)], \(start), \(shuffle), \(repeatMode))")

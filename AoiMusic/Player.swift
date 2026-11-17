@@ -30,10 +30,6 @@ final class Player: ObservableObject {
     @Published var toast: String?
 
     let engine: EngineBridge
-    // v110: second engine - a real GitHub Pages page in its own web view,
-    // used ONLY for playback (the bundled engine keeps login). Transport
-    // routes to it once ready; until then the login engine plays.
-    let playback: EngineBridge
     let api: APIClient
     private let av = AVPlayer()
     private var timeObserver: Any?
@@ -50,7 +46,6 @@ final class Player: ObservableObject {
     init(engine: EngineBridge, api: APIClient) {
         self.engine = engine
         self.api = api
-        self.playback = EngineBridge(mode: .playback)
         history = Self.loadJSON("aoi-history", [Song].self) ?? []
         searchHistory = Self.loadJSON("aoi-search-entities", [SearchEntity].self) ?? []
         // Favorites survive relaunches: hearts are restored from local storage
@@ -83,32 +78,28 @@ final class Player: ObservableObject {
     }
 
     // MARK: - engine wiring
-    // v110: both engines report through the same handlers. The login
-    // engine's reports are ignored once the playback engine is live -
-    // its idle progress ticks (0 / not playing) would otherwise stomp
-    // the real playback state twice a second.
+    // v111: single engine again (the v109 shape). The v110 dual-engine
+    // split is reverted in full: the second (Pages) engine's queue
+    // never built inside the app webview (instant CONTENT_EQUIVALENT,
+    // empty queue, on every attempt from 110.0 to 110.6), and while it
+    // existed its idle state/progress ticks fought the real player's
+    // on the UI - the play button flickered and switches went nowhere.
+    // One engine now: state, progress, items and transport all come
+    // from the same place, exactly like v109.
     private func setupEngine() {
-        wireEngine(engine, isAuth: true)
-        wireEngine(playback, isAuth: false)
-        engine.onAuth = { [weak self] _, token in
-            self?.playback.setUserToken(token)
-        }
-    }
-
-    private func wireEngine(_ e: EngineBridge, isAuth: Bool) {
-        e.onState = { [weak self] playing in
-            guard let self = self, self.useEngine, !(isAuth && self.playback.ready) else { return }
+        engine.onState = { [weak self] playing in
+            guard let self = self, self.useEngine else { return }
             self.isPlaying = playing
             self.updateNowPlayingInfo()
         }
-        e.onProgress = { [weak self] t, d, playing in
-            guard let self = self, self.useEngine, !(isAuth && self.playback.ready) else { return }
+        engine.onProgress = { [weak self] t, d, playing in
+            guard let self = self, self.useEngine else { return }
             self.currentTime = t
             if d > 0 { self.duration = d }
             self.isPlaying = playing
         }
-        e.onItem = { [weak self] item in
-            guard let self = self, self.useEngine, !(isAuth && self.playback.ready), let item = item else { return }
+        engine.onItem = { [weak self] item in
+            guard let self = self, self.useEngine, let item = item else { return }
             if let idx = self.queue.firstIndex(where: { $0.playbackId == item.id || $0.id == item.id }) {
                 if idx != self.index { self.index = idx }
                 self.current = self.queue[idx]
@@ -120,21 +111,17 @@ final class Player: ObservableObject {
             if let c = self.current { self.recordHistory(c) }
             self.updateNowPlayingInfo()
         }
-        e.onError = { [weak self] kind in
+        engine.onError = { [weak self] kind in
             // Only a failed playback attempt may surface the "playback failed" toast,
             // and only if nothing actually started playing shortly after (the engine
             // reports superseded-operation errors that are not real failures).
-            guard let self = self, !(isAuth && self.playback.ready), kind == "playQueue" || kind == "station" else { return }
+            guard let self = self, kind == "playQueue" || kind == "station" else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
                 guard let self = self, self.useEngine, !self.isPlaying else { return }
                 self.showToast(Strings.get("play_fail", self.lang))
             }
         }
     }
-
-    // v110 transport router: the playback engine once it is ready, the
-    // login engine before that (or if the remote page cannot load).
-    private var transport: EngineBridge { playback.ready ? playback : engine }
 
     // MARK: - preview (AVPlayer) wiring
     private func setupPreview() {
@@ -160,7 +147,7 @@ final class Player: ObservableObject {
 
     func playDownloaded(_ items: [DownloadedSong], start: Int, manager: DownloadManager) {
         guard items.indices.contains(start) else { return }
-        if useEngine { transport.pause() }
+        if useEngine { engine.pause() }
         localURLs = Dictionary(uniqueKeysWithValues: items.map { ($0.id, manager.localURL($0)) })
         queue = items.map { manager.songStub($0) }
         index = start
@@ -185,14 +172,9 @@ final class Player: ObservableObject {
     // MARK: - transport
     func playSongs(_ songs: [Song], start: Int) {
         guard !songs.isEmpty, songs.indices.contains(start) else { return }
-        // v110: if the playback engine is up but has not seen the token
-        // yet (startup race), hand it over again before deciding.
-        if playback.ready && !playback.authorized && engine.authorized {
-            playback.setUserToken(engine.userToken)
-        }
         var list = songs
         var startAt = start
-        if transport.authorized {
+        if engine.authorized {
             // Songs without a catalog identity cannot be queued in the
             // engine at all: MusicKit drops them silently and every later
             // index shifts — exactly the Library/Favorites "tapped one
@@ -210,11 +192,11 @@ final class Player: ObservableObject {
         index = startAt
         current = list[startAt]
         recordHistory(list[startAt])
-        if transport.authorized {
+        if engine.authorized {
             useEngine = true
             av.pause()
             let ids = list.map { $0.playbackId }
-            transport.playQueue(ids: ids, start: startAt, shuffle: shuffle, repeatMode: repeatMode)
+            engine.playQueue(ids: ids, start: startAt, shuffle: shuffle, repeatMode: repeatMode)
             isPlaying = true
         } else {
             useEngine = false
@@ -246,7 +228,7 @@ final class Player: ObservableObject {
     func togglePlay() {
         guard current != nil else { return }
         if useEngine {
-            if isPlaying { transport.pause() } else { transport.play() }
+            if isPlaying { engine.pause() } else { engine.play() }
             isPlaying.toggle()
         } else {
             if av.timeControlStatus == .playing { av.pause(); isPlaying = false }
@@ -256,7 +238,7 @@ final class Player: ObservableObject {
 
     func next(auto: Bool = false) {
         if useEngine {
-            if !auto { transport.next() }
+            if !auto { engine.next() }
             return // engine advances by itself on auto
         }
         guard !queue.isEmpty else { return }
@@ -278,7 +260,7 @@ final class Player: ObservableObject {
     }
 
     func prev() {
-        if useEngine { transport.prev(); return }
+        if useEngine { engine.prev(); return }
         if currentTime > 3 { seek(0); return }
         if index > 0 {
             index -= 1
@@ -297,7 +279,7 @@ final class Player: ObservableObject {
         // first song just kept playing. When in doubt, send the jump.
         if i == index, current?.playbackId == queue[i].playbackId { return }
         if useEngine {
-            transport.jumpTo(i)
+            engine.jumpTo(i)
             index = i
             current = queue[i]
             recordHistory(queue[i])
@@ -311,18 +293,18 @@ final class Player: ObservableObject {
     }
 
     func seek(_ sec: Double) {
-        if useEngine { transport.seek(sec) }
+        if useEngine { engine.seek(sec) }
         else { av.seek(to: CMTime(seconds: sec, preferredTimescale: 600)) }
         currentTime = sec
     }
 
     func toggleShuffle() {
         shuffle.toggle()
-        if useEngine { transport.setShuffle(shuffle) }
+        if useEngine { engine.setShuffle(shuffle) }
     }
     func cycleRepeat() {
         repeatMode = (repeatMode + 1) % 3
-        if useEngine { transport.setRepeat(repeatMode) }
+        if useEngine { engine.setRepeat(repeatMode) }
     }
 
     func playStation(_ st: CollectionItem) {
@@ -330,7 +312,7 @@ final class Player: ObservableObject {
         // so stations are handled by a dedicated JS call:
         useEngine = true
         av.pause()
-        transport.callStation(st.id)
+        engine.callStation(st.id)
         isPlaying = true
     }
 
