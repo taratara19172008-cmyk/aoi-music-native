@@ -19,6 +19,7 @@ struct CollectionView: View {
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showDeleteConfirm = false
+    @State private var artistId: String?
 
     var body: some View {
         ZStack {
@@ -143,7 +144,21 @@ struct CollectionView: View {
                 .font(.title3.weight(.bold))
                 .multilineTextAlignment(.center)
             if let sub = item?.sub, !sub.isEmpty {
-                Text(sub).font(.subheadline).foregroundStyle(.secondary)
+                if kind == "album", let aid = artistId {
+                    // The artist name under an album title jumps to the
+                    // artist page (v108, her request).
+                    Button { nav.detail = .artist(id: aid) } label: {
+                        HStack(spacing: 3) {
+                            Text(sub)
+                            Image(systemName: "chevron.right").font(.caption2.weight(.bold))
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(settings.accent)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text(sub).font(.subheadline).foregroundStyle(.secondary)
+                }
             }
             if !tracks.isEmpty {
                 Text("\(tracks.count) \(settings.t("tracks_count"))")
@@ -270,6 +285,16 @@ struct CollectionView: View {
         return s.isEmpty ? nil : s
     }
 
+    // Resolve the album's artist (for the tappable name in the hero) by
+    // searching the artist name — the same fallback pattern the rest of
+    // the app uses when a payload carries no artist relationship.
+    private func resolveArtist() async {
+        guard artistId == nil, let name = item?.sub, !name.isEmpty else { return }
+        guard let r = try? await api.search(term: name) else { return }
+        let artists = r.results?.artists?.data ?? []
+        artistId = (artists.first(where: { $0.title == name }) ?? artists.first)?.id
+    }
+
     private func load(force: Bool = false) async {
         if loaded && !force { return }
         do {
@@ -282,6 +307,7 @@ struct CollectionView: View {
         if kind == "album" || kind == "playlist" {
             motionURLStr = await api.motionURL(kind: kind == "album" ? "albums" : "playlists", id: id)
         }
+        if kind == "album" { await resolveArtist() }
         if kind == "album", engine.authorized, let it = item, !player.isFavAlbum(id) {
             // Hydrate from Apple's ratings once; a hit joins the local list.
             if await api.rating(kind: "albums", id: id) { player.absorbFavAlbums([it]) }

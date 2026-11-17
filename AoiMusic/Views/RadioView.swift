@@ -57,35 +57,43 @@ struct RadioView: View {
 
     private func stationCard(_ item: CollectionItem) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.secondary.opacity(0.15))
-                if let u = item.art(480, 300), let url = URL(string: u) {
-                    AsyncImage(url: url) { img in
-                        img.resizable().scaledToFill()
-                    } placeholder: {
-                        Image(systemName: "radio")
-                            .font(.title2)
-                            .foregroundStyle(.secondary)
+            // Uniform square cards (v108): station artwork arrives in mixed
+            // aspect ratios and the old ZStack let scaledToFill images push
+            // the card to their own size — the grid came out ragged. The
+            // clear base DEFINES the square; the image fills it as an
+            // overlay and is clipped, whatever its native ratio.
+            Color.clear
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color.secondary.opacity(0.15))
+                        if let u = item.art(600, 600), let url = URL(string: u) {
+                            AsyncImage(url: url) { img in
+                                img.resizable().scaledToFill()
+                            } placeholder: {
+                                Image(systemName: "radio")
+                                    .font(.title2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Image(systemName: "radio")
+                                .font(.title2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                } else {
-                    Image(systemName: "radio")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
                 }
-            }
-            .frame(maxWidth: .infinity)
-            .aspectRatio(1.6, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             MarqueeText(text: item.title,
                         font: .subheadline.weight(.semibold),
                         uiFont: .systemFont(ofSize: 15, weight: .semibold))
-            if !item.sub.isEmpty {
-                MarqueeText(text: item.sub,
-                            font: .caption,
-                            uiFont: .systemFont(ofSize: 12),
-                            color: .secondary)
-            }
+                .frame(height: 20, alignment: .leading)
+            // The subtitle slot always exists so rows line up.
+            MarqueeText(text: item.sub.isEmpty ? " " : item.sub,
+                        font: .caption,
+                        uiFont: .systemFont(ofSize: 12),
+                        color: .secondary)
+                .frame(height: 16, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())

@@ -54,6 +54,13 @@ struct MarqueeText: View {
     var maxLines: Int = 2
     @State private var slotW: CGFloat = 0
     @State private var offsetX: CGFloat = 0
+    // Measurement cache (v108): `fits`/`travel` used to re-run NSString
+    // text measurement on EVERY render of EVERY row — and the player
+    // publishes progress twice a second, re-rendering the whole tree.
+    // That steady main-thread tax is a prime suspect in her "老卡死"
+    // report. Measure once per (text, slot width); renders read the cache.
+    @State private var fitsCached: Bool = true
+    @State private var travelCached: CGFloat = 0
 
     private var intrinsicW: CGFloat { (text as NSString).size(withAttributes: [.font: uiFont]).width }
 
@@ -79,23 +86,29 @@ struct MarqueeText: View {
     private var travel: CGFloat { max(intrinsicW - slotW + 44, 0) }
     private var taskKey: String { "\(text)|\(Int(slotW))" }
 
+    private func measure() {
+        fitsCached = fits
+        travelCached = travel
+    }
+
     var body: some View {
         Text(text)
             .font(font)
             .foregroundStyle(color)
             .lineLimit(maxLines)
             .multilineTextAlignment(.leading)
-            .opacity(fits ? 1 : 0)
+            .opacity(fitsCached ? 1 : 0)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 GeometryReader { g in
                     Color.clear
-                        .onAppear { slotW = g.size.width }
-                        .onChange(of: g.size.width) { _, w in slotW = w }
+                        .onAppear { slotW = g.size.width; measure() }
+                        .onChange(of: g.size.width) { _, w in slotW = w; measure() }
+                        .onChange(of: text) { _, _ in measure() }
                 }
             }
             .overlay(alignment: .topLeading) {
-                if !fits {
+                if !fitsCached {
                     ZStack(alignment: .leading) {
                         Text(text)
                             .font(font)
@@ -116,9 +129,9 @@ struct MarqueeText: View {
             offsetX = 0
             try? await Task.sleep(nanoseconds: 1_400_000_000)
             if Task.isCancelled { return }
-            let d = Double(travel) / 26.0
+            let d = Double(travelCached) / 26.0
             if d <= 0 { return }
-            withAnimation(.linear(duration: d)) { offsetX = -travel }
+            withAnimation(.linear(duration: d)) { offsetX = -travelCached }
             try? await Task.sleep(nanoseconds: UInt64(d * 1_000_000_000) + 1_200_000_000)
             if Task.isCancelled { return }
         }

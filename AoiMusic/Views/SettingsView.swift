@@ -199,6 +199,12 @@ struct SettingsView: View {
     private var engineDiag: String {
         var s = "Engine ready: \(engine.ready ? "yes" : "no") · Page loaded: \(engine.pageLoaded ? "yes" : "no")"
         if !engine.lastError.isEmpty { s += "\n" + engine.lastError }
+        // Widget data channel (v108): the now-playing widget reads through
+        // the app group; if the sideload signature dropped the group, this
+        // says so plainly instead of the widget silently showing nothing.
+        let groupOK = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.aoimusic.app") != nil
+        let hasSong = UserDefaults(suiteName: "group.com.aoimusic.app")?.string(forKey: "np_title") != nil
+        s += "\n小组件通道: " + (groupOK ? (hasSong ? "正常 · 已有歌曲数据" : "正常 · 暂无歌曲数据") : "不可用（签名未包含 App Group）")
         return s
     }
 
