@@ -74,23 +74,49 @@ struct RootView: View {
         .fullScreenCover(isPresented: $nav.showNowPlaying) {
             NowPlayingView()
         }
+        .onAppear { WidgetShared.publishAccent(settings.accentHex) }
+        .onChange(of: settings.accentHex) { _, hex in WidgetShared.publishAccent(hex) }
     }
 
     private var background: some View {
         GeometryReader { geo in
             ZStack {
-                LinearGradient(colors: [Color(red: 0.93, green: 0.96, blue: 0.99), Color(red: 0.98, green: 0.92, blue: 0.95), Color(red: 0.94, green: 0.93, blue: 0.99)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                // v114: the theme colour is IN the gradient now, not
+                // just in the blooms - the whole backdrop carries it.
+                LinearGradient(colors: [Color(red: 0.93, green: 0.96, blue: 0.99),
+                                        settings.accent.opacity(0.30),
+                                        Color(red: 0.98, green: 0.92, blue: 0.95),
+                                        settings.accent.opacity(0.20)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
                 if let img = settings.bgImage {
                     Image(uiImage: img)
                         .resizable()
                         .scaledToFill()
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()
-                    Color.white.opacity(0.22)
+                    Color.white.opacity(0.14)
                 }
-                Circle().fill(settings.accent.opacity(0.38)).frame(width: 320, height: 320).blur(radius: 75).offset(x: -130, y: -260)
-                Circle().fill(Color(red: 0.45, green: 0.75, blue: 0.95).opacity(0.34)).frame(width: 300, height: 300).blur(radius: 75).offset(x: 150, y: 240)
-                Circle().fill(Color(red: 1.0, green: 0.72, blue: 0.55).opacity(0.26)).frame(width: 260, height: 260).blur(radius: 75).offset(x: 120, y: -180)
+                // Light blooms （光晕）: stronger, wider, and one more
+                // in the theme colour low in the frame.
+                Circle().fill(settings.accent.opacity(0.52)).frame(width: 340, height: 340).blur(radius: 85).offset(x: -130, y: -260)
+                Circle().fill(Color(red: 0.45, green: 0.75, blue: 0.95).opacity(0.40)).frame(width: 320, height: 320).blur(radius: 85).offset(x: 150, y: 240)
+                Circle().fill(Color(red: 1.0, green: 0.72, blue: 0.55).opacity(0.34)).frame(width: 280, height: 280).blur(radius: 85).offset(x: 120, y: -180)
+                Circle().fill(settings.accent.opacity(0.30)).frame(width: 300, height: 300).blur(radius: 95).offset(x: -60, y: 330)
+                // Specular streak: a soft diagonal band of light, the
+                // way light rakes across a sheet of glass.
+                Rectangle()
+                    .fill(LinearGradient(colors: [.clear, .white.opacity(0.20), .white.opacity(0.05), .clear],
+                                         startPoint: .leading, endPoint: .trailing))
+                    .frame(width: geo.size.width * 1.5, height: 190)
+                    .rotationEffect(.degrees(-24))
+                    .blur(radius: 26)
+                    .offset(y: -geo.size.height * 0.28)
+                // Vignette （晕影）: the edges fall gently away so the
+                // glass content floats in a pool of light.
+                RadialGradient(colors: [.clear, .black.opacity(0.10)],
+                               center: .center,
+                               startRadius: geo.size.width * 0.42,
+                               endRadius: geo.size.width * 0.98)
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
