@@ -5,6 +5,10 @@
 // MusicKit that models what the device logs showed: setQueue ignores
 // startIndex (position stays 0), jumps can abort or "settle" without
 // landing, and ids can be unresolvable in the storefront.
+// The fake's queue.append / playLater model the real musickit.js
+// signatures (append takes MediaItem arrays; playLater takes a
+// setQueue-style descriptor) - the v109.8 append bug shipped
+// because the old fake accepted the wrong shape.
 'use strict';
 const fs = require('fs');
 const vm = require('vm');
@@ -43,16 +47,22 @@ const music = {
   musicUserToken: 'tok', nowPlayingItem: null,
   currentPlaybackTime: 0, currentPlaybackDuration: 0, shuffleMode: 0, repeatMode: 0,
   queue: { items: [], position: -1,
-    async append(opts) {
-      const bad = (opts.songs || []).map(String).filter(id => music.unresolvable.has(id));
+    // Real MusicKit (musickit.js source): queue.append takes an
+    // ARRAY of MediaItems - toQueueItems does e.map(...) on the
+    // argument itself, so the {songs} object form v109.8 used
+    // throws 'e.map is not a function'. Modelled faithfully.
+    async append(items) {
+      music.appendCalls++;
+      const ids = items.map(x => String(x && x.id !== undefined ? x.id : x));
+      const bad = ids.filter(id => music.unresolvable.has(id));
       if (bad.length) throw new Error('could not be resolved: ' + bad.join(', '));
-      for (const id of opts.songs || []) this.items.push({ id: String(id) });
+      for (const id of ids) this.items.push({ id });
     } },
   _listeners: {},
   // scripting knobs for the tests
   unresolvable: new Set(), jumpAbortTimes: 0, jumpLie: false,
   jumpHang: false, playHang: false, jumpCalls: 0,
-  playCalls: 0, setQueueCalls: [],
+  playCalls: 0, setQueueCalls: [], playLaterCalls: [], appendCalls: 0, playLaterGate: null,
   addEventListener(n, f) { (this._listeners[n] = this._listeners[n] || []).push(f); },
   async authorize() { return 'tok'; },
   async setQueue(opts) {
@@ -74,14 +84,24 @@ const music = {
       this.nowPlayingItem = this.queue.items[i] || null;
     }
   },
+  async playLater(opts) {
+    this.playLaterCalls.push(opts);
+    if (this.playLaterGate) { const g = this.playLaterGate; this.playLaterGate = null; await g; }
+    const bad = (opts.songs || []).map(String).filter(id => this.unresolvable.has(id));
+    if (bad.length) throw new Error('could not be resolved: ' + bad.join(', '));
+    for (const id of opts.songs || []) this.queue.items.push({ id: String(id) });
+  },
   async play() { this.playCalls++; if (this.playHang) return new Promise(() => {}); this.isPlaying = true; },
-  async pause() {}, async skipToNextItem() {}, async skipToPreviousItem() {},
+  async pause() {},
+  async skipToNextItem() { const q = this.queue; if (q.position < q.items.length - 1) { q.position++; this.nowPlayingItem = q.items[q.position] || null; } },
+  async skipToPreviousItem() { const q = this.queue; if (q.position > 0) { q.position--; this.nowPlayingItem = q.items[q.position] || null; } },
   seekToTime() {},
   reset() {
     this.queue.items = []; this.queue.position = -1; this.nowPlayingItem = null;
     this.unresolvable = new Set(); this.jumpAbortTimes = 0; this.jumpLie = false;
     this.jumpHang = false; this.playHang = false; this.jumpCalls = 0;
     this.playCalls = 0; this.setQueueCalls = []; this.isPlaying = false;
+    this.playLaterCalls = []; this.appendCalls = 0; this.playLaterGate = null;
     posts.length = 0;
   },
 };
@@ -148,13 +168,15 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
   // ---- playback (v109.6): rotation is the only tap path ----
   music.reset();
   await sandbox.AoiEngine.playQueue(['111', '222', '333'], 0, false, 0);
-  check('@0: setQueue once, original order, startPlaying', music.setQueueCalls.length === 1 && JSON.stringify(music.setQueueCalls[0].songs) === '["111","222","333"]' && music.setQueueCalls[0].startPlaying === true);
+  check('@0: first setQueue is the tapped song only, startPlaying', music.setQueueCalls.length === 1 && JSON.stringify(music.setQueueCalls[0].songs) === '["111"]' && music.setQueueCalls[0].startPlaying === true);
   check('@0: play() called, no jump used', music.playCalls === 1 && music.jumpCalls === 0);
+  await new Promise(r => setTimeout(r, 60));
+  check('@0: rest of the list landed via playLater', JSON.stringify(music.queue.items.map(x => x.id)) === '["111","222","333"]' && music.playLaterCalls.length === 1);
   check("@0: MusicKit's resolution fetch went via relay", rawFetchCalls.some(c => c.url.startsWith(RELAY + '?target=') && c.url.includes('songs')));
 
   music.reset();
   await sandbox.AoiEngine.playQueue(['111', '222', '333'], 2, false, 0);
-  check('@2: queue rotated, target at head', JSON.stringify(music.setQueueCalls[0].songs) === '["333","111","222"]' && music.setQueueCalls[0].startPlaying === true);
+  check('@2: tapped song alone in first setQueue, startPlaying', JSON.stringify(music.setQueueCalls[0].songs) === '["333"]' && music.setQueueCalls[0].startPlaying === true);
   check('@2: target plays, changeToMediaAtIndex never called', music.nowPlayingItem.id === '333' && music.playCalls === 1 && music.jumpCalls === 0 && errPosts().length === 0);
 
   // ---- a hanging jump API cannot hurt: it is never called ----
@@ -178,14 +200,17 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
   // ---- non-target song unresolvable: dropped from rotated queue ----
   music.reset(); music.unresolvable = new Set(['111']);
   await sandbox.AoiEngine.playQueue(['111', '222', '333'], 2, false, 0);
-  check('non-target dropped: rotated queue rebuilt without it', music.setQueueCalls.length === 2 && JSON.stringify(music.setQueueCalls[1].songs) === '["333","222"]');
+  await new Promise(r => setTimeout(r, 60));
+  check('non-target dropped: completion rebuilt the queue without it', music.setQueueCalls.length === 1 && JSON.stringify(music.queue.items.map(x => x.id)) === '["333","222"]');
   check('non-target dropped: tapped song plays', music.nowPlayingItem.id === '333' && music.playCalls === 1);
 
   // ---- jumpTo re-rotates by id ----
   music.reset();
   await sandbox.AoiEngine.playQueue(['111', '222', '333'], 2, false, 0);
+  await new Promise(r => setTimeout(r, 60));
   await sandbox.AoiEngine.jumpTo(0);
-  check('jumpTo(0): queue re-rotated, song 111 at head and playing', JSON.stringify(music.setQueueCalls[1].songs) === '["111","222","333"]' && music.nowPlayingItem.id === '111');
+  check('jumpTo(0): queue re-rotated, song 111 at head and playing', JSON.stringify(music.setQueueCalls[1].songs) === '["111"]' && music.nowPlayingItem.id === '111');
+  await new Promise(r => setTimeout(r, 60));
   await sandbox.AoiEngine.jumpTo(2);
   check('jumpTo(2): song 333 at head', music.nowPlayingItem.id === '333' && music.jumpCalls === 0);
 
@@ -202,26 +227,57 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
   await sandbox.AoiEngine.playQueue(['111', '222', '333'], 2, true, 0);
   check('shuffle: target at head, plays, no errors', music.nowPlayingItem.id === '333' && music.playCalls === 1 && errPosts().length === 0);
 
-  // ---- v109.8: long list - head window first, background completion ----
+  // ---- v109.9: long list - one song now, playLater completes ----
   music.reset();
   await sandbox.AoiEngine.playQueue(['1', '2', '3', '4', '5', '6'], 4, false, 0);
-  check('long list: first setQueue is the head window only', music.setQueueCalls.length === 1 && JSON.stringify(music.setQueueCalls[0].songs) === '["5","6","1"]');
+  check('long list: first setQueue is the tapped song only', music.setQueueCalls.length === 1 && JSON.stringify(music.setQueueCalls[0].songs) === '["5"]');
   check('long list: tapped song playing right away', music.nowPlayingItem.id === '5' && music.playCalls === 1);
   await new Promise(r => setTimeout(r, 60));
-  check('long list: background append completed the rotated queue', JSON.stringify(music.queue.items.map(x => x.id)) === '["5","6","1","2","3","4"]');
+  check('long list: playLater completed the rotated queue', JSON.stringify(music.queue.items.map(x => x.id)) === '["5","6","1","2","3","4"]');
+  check('long list: queue.append (MediaItem API) never used', music.appendCalls === 0);
 
-  // ---- v109.8: a newer tap supersedes the previous queue ----
+  // ---- v109.9: a newer tap supersedes the previous queue ----
   music.reset();
   await sandbox.AoiEngine.playQueue(['1', '2', '3', '4', '5', '6'], 0, false, 0);
   await sandbox.AoiEngine.playQueue(['7', '8', '9'], 0, false, 0);
   await new Promise(r => setTimeout(r, 60));
   check('superseded: queue belongs to the newer tap only', JSON.stringify(music.queue.items.map(x => x.id)) === '["7","8","9"]');
 
-  // ---- v109.8: unresolvable song in the tail is dropped by completion ----
+  // ---- v109.9: unresolvable song in the tail is dropped by completion ----
   music.reset(); music.unresolvable = new Set(['3']);
   await sandbox.AoiEngine.playQueue(['1', '2', '3', '4', '5'], 0, false, 0);
   await new Promise(r => setTimeout(r, 60));
   check('tail drop: queue completed without the bad song', JSON.stringify(music.queue.items.map(x => x.id)) === '["1","2","4","5"]' && music.nowPlayingItem.id === '1');
+
+  // ---- v109.9: Next before the completion lands rotates ----
+  music.reset();
+  let releaseGate;
+  music.playLaterGate = new Promise(r => { releaseGate = r; });
+  await sandbox.AoiEngine.playQueue(['1', '2', '3', '4', '5', '6'], 0, false, 0);
+  check('gated completion: only the tapped song is loaded', JSON.stringify(music.queue.items.map(x => x.id)) === '["1"]');
+  await sandbox.AoiEngine.next();
+  check('next before completion: rotated to song 2 and playing', music.nowPlayingItem.id === '2' && JSON.stringify(music.setQueueCalls[music.setQueueCalls.length - 1].songs) === '["2"]');
+  releaseGate();
+  await new Promise(r => setTimeout(r, 60));
+  check('stale completion: new queue head untouched (song 2)', music.queue.items[0].id === '2');
+
+  // ---- v109.9: jumpTo to a not-yet-loaded song rotates ----
+  music.reset();
+  let releaseGate2;
+  music.playLaterGate = new Promise(r => { releaseGate2 = r; });
+  await sandbox.AoiEngine.playQueue(['1', '2', '3', '4', '5', '6'], 0, false, 0);
+  await sandbox.AoiEngine.jumpTo(3);
+  check('jumpTo unloaded target: rotated from the app list, song 4 playing', music.nowPlayingItem.id === '4' && JSON.stringify(music.setQueueCalls[music.setQueueCalls.length - 1].songs) === '["4"]');
+  releaseGate2();
+  await new Promise(r => setTimeout(r, 60));
+
+  // ---- v109.9: Next after completion uses a plain skip ----
+  music.reset();
+  await sandbox.AoiEngine.playQueue(['1', '2', '3'], 0, false, 0);
+  await new Promise(r => setTimeout(r, 60));
+  const sqBefore = music.setQueueCalls.length;
+  await sandbox.AoiEngine.next();
+  check('next after completion: skip only, no re-queue', music.setQueueCalls.length === sqBefore && music.nowPlayingItem.id === '2');
 
   console.log(fails ? ('\n' + fails + ' FAILURES') : '\nALL PASS');
   process.exit(fails ? 1 : 0);
