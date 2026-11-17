@@ -19,6 +19,11 @@ final class Player: ObservableObject {
     @Published var isPlaying = false
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
+    // v114: true when MusicKit substituted a ~30s preview for a song
+    // whose full length is minutes (cross-storefront resource). The
+    // Now Playing badge reads this instead of assuming engine = full.
+    @Published var isPreviewClip = false
+    private var previewTried = Set<String>()
     @Published var shuffle = false
     @Published var repeatMode = 0 // app: 0 off, 1 all, 2 one
     @Published var useEngine = false
@@ -53,6 +58,9 @@ final class Player: ObservableObject {
         favSongs = Self.loadJSON("aoi-fav-songs", [Song].self) ?? []
         favSet = Set(favSongs.map { "s:" + $0.playbackId })
         favAlbums = Self.loadJSON("aoi-fav-albums", [CollectionItem].self) ?? []
+        let favAlbumCountBefore = favAlbums.count
+        dedupeFavAlbums()
+        if favAlbums.count != favAlbumCountBefore { persistFavAlbums() }
         setupEngine()
         setupPreview()
         setupRemote()
@@ -102,6 +110,7 @@ final class Player: ObservableObject {
             self.currentTime = t
             if d > 0, d != self.duration { self.duration = d }
             if playing != self.isPlaying { self.isPlaying = playing }
+            self.checkPreviewClip(t: t, d: d)
         }
         engine.onItem = { [weak self] item in
             guard let self = self, self.useEngine, let item = item else { return }
@@ -125,6 +134,40 @@ final class Player: ObservableObject {
                 guard let self = self, self.useEngine, !self.isPlaying else { return }
                 self.showToast(Strings.get("play_fail", self.lang))
             }
+        }
+    }
+
+    // MARK: - v114 preview-substitution detection + recovery
+    // A full song whose loaded asset is only ~30s long means MusicKit
+    // took the preview out of a foreign-storefront resource (radio
+    // lists are the usual source). Flag it honestly in the UI, then
+    // once per song: resolve the same recording in the account's own
+    // storefront and replay the queue with it swapped in.
+    private func checkPreviewClip(t: Double, d: Double) {
+        guard useEngine, t >= 2, d > 10, d < 45,
+              let cur = current,
+              let exp = cur.attributes?.durationInMillis, exp > 90_000,
+              d < Double(exp) / 1000 * 0.6 else { return }
+        if !isPreviewClip { isPreviewClip = true }
+        let key = cur.playbackId
+        guard !previewTried.contains(key) else { return }
+        previewTried.insert(key)
+        Task { [weak self] in
+            guard let self = self else { return }
+            let fixed = await self.api.resolveInStorefront(cur)
+            guard let fixed = fixed, fixed.id != cur.playbackId, fixed.id != cur.id,
+                  self.current?.playbackId == key else {
+                self.showToast(Strings.get("preview_only", self.lang))
+                return
+            }
+            var list = self.queue
+            for i in list.indices where list[i].playbackId == key || list[i].id == cur.id {
+                list[i] = fixed
+            }
+            self.previewTried.insert(fixed.id)
+            let startAt = list.firstIndex(where: { $0.id == fixed.id }) ?? self.index
+            self.playSongs(list, start: startAt)
+            self.showToast(Strings.get("region_switched", self.lang))
         }
     }
 
@@ -177,6 +220,7 @@ final class Player: ObservableObject {
     // MARK: - transport
     func playSongs(_ songs: [Song], start: Int) {
         guard !songs.isEmpty, songs.indices.contains(start) else { return }
+        isPreviewClip = false
         var list = songs
         var startAt = start
         if engine.authorized {
@@ -502,11 +546,38 @@ final class Player: ObservableObject {
     // only walked albums already in the library.)
     private func persistFavAlbums() { Self.saveJSON("aoi-fav-albums", favAlbums) }
     func isFavAlbum(_ id: String) -> Bool { favAlbums.contains { $0.id == id } }
+    // v114: the same album reaches this list under different ids
+    // (catalog id from its page, library id from a library list,
+    // another edition's id from the ratings scan) - identity is
+    // title+artist, not the raw id, or she sees the album twice.
+    private func albumIdentity(_ a: CollectionItem) -> String {
+        a.title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            + "|" + a.sub.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    func isFavAlbumItem(_ item: CollectionItem) -> Bool {
+        let key = albumIdentity(item)
+        return favAlbums.contains { $0.id == item.id || albumIdentity($0) == key }
+    }
+    // Collapse the persisted list to one entry per album: same id,
+    // or same title+artist under a different id (untitled entries
+    // only dedupe by id - their identity key would be meaningless).
+    private func dedupeFavAlbums() {
+        var seenIds = Set<String>()
+        var seenKeys = Set<String>()
+        favAlbums = favAlbums.filter { a in
+            guard seenIds.insert(a.id).inserted else { return false }
+            if !a.title.isEmpty {
+                guard seenKeys.insert(albumIdentity(a)).inserted else { return false }
+            }
+            return true
+        }
+    }
     private func applyFavAlbum(_ item: CollectionItem, loved: Bool) {
         if loved {
-            if !isFavAlbum(item.id) { favAlbums.insert(item, at: 0) }
+            if !isFavAlbumItem(item) { favAlbums.insert(item, at: 0) }
         } else {
-            favAlbums.removeAll { $0.id == item.id }
+            let key = albumIdentity(item)
+            favAlbums.removeAll { $0.id == item.id || albumIdentity($0) == key }
         }
         persistFavAlbums()
     }
@@ -515,7 +586,7 @@ final class Player: ObservableObject {
 
     func toggleFavAlbum(_ item: CollectionItem, lang: String) {
         guard engine.authorized else { showToast(Strings.get("need_acct_fav", lang)); return }
-        let firstTarget = !isFavAlbum(item.id)
+        let firstTarget = !isFavAlbumItem(item)
         applyFavAlbum(item, loved: firstTarget)
         favAlbumDesired[item.id] = firstTarget
         guard !favAlbumBusy.contains(item.id) else { return }
@@ -556,7 +627,7 @@ final class Player: ObservableObject {
     }
     func absorbFavAlbums(_ remote: [CollectionItem]) {
         var changed = false
-        for a in remote where !isFavAlbum(a.id) {
+        for a in remote where !isFavAlbumItem(a) {
             favAlbums.append(a)
             changed = true
         }
