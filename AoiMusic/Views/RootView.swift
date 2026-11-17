@@ -30,10 +30,14 @@ struct RootView: View {
             // The engine's web view hosts at FULL size behind everything
             // (v108): at 1x1 WebKit treats the page as barely visible and
             // may throttle its timers and media pipeline, which the
-            // playback engine depends on. Invisible, but full-size.
+            // playback engine depends on. v112: opacity is back to 1 -
+            // GPT's review flagged 0.01 as a throttling suspect in its
+            // own right (a nearly-transparent page reads as not-visible
+            // to WebKit's heuristics). The page renders nothing and the
+            // web view is transparent (EngineBridge sets isOpaque =
+            // false), so full opacity still shows nothing.
             EngineHost(webView: engine.webView)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .opacity(0.01)
                 .allowsHitTesting(false)
             HStack(spacing: 10) {
                 rail
