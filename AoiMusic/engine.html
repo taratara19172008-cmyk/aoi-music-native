@@ -13,7 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.8';
+window.ENGINE_VERSION = '109.9';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -229,19 +229,31 @@ function bounded(promise, ms) {
 let queueOffset = 0;
 let appQueueIds = [];
 
-// ---------- v109.8: sound first, queue later ----------
-// On device (109.7 log, 2026-11-17 19:00) a tap on a 52-song list
-// rotated the WHOLE list through setQueue: 24.7s to settle, then the
-// play() after it hung 34s - the switch produced silence. A 1-song
-// queue in the same log settled end-to-end in 7.2s. Per-item
-// resolution is the cost, so a tap now setQueues only a small head
-// window (the target + the next two, startPlaying inside), gets its
-// sound, and the REST of the rotated list is appended to the live
-// queue in the background. Appends run OUTSIDE the serial op chain
-// (they can take as long as they take without blocking taps), and
-// the queueReqToken generation keeps a stale completion from ever
-// touching a newer queue.
-const HEAD_WINDOW = 3;
+// ---------- v109.9: one song now, the list right behind it ----------
+// On-device evidence across three logs: a 1-song setQueue settled
+// end-to-end in 7.2s (109.7 log); a 3-song head window took 18.5s
+// (109.8 log); a 52-song queue took 24.7s and the play() after it
+// hung (109.7 log). Per-item resolution inside MusicKit dominates
+// and varies wildly (catalog-fetch throttling on Apple's side is
+// documented by other MusicKit apps), so a tap now setQueues ONLY
+// the tapped song (startPlaying inside), gets its sound, and the
+// rest of the rotated list lands via music.playLater - the
+// descriptor-based queue append Apple supports (same loadItems
+// machinery as setQueue; verified in the musickit.js source:
+// instance.playLater -> loadItems -> appendToQueue). v109.8 used
+// queue.append({songs}) instead: that API takes an ARRAY of
+// already-built MediaItems, so the object form threw 'e.map is
+// not a function' on device and the queue was never completed -
+// the first songs played, then silence. Completion runs OUTSIDE
+// the serial op chain in paced chunks; the queueReqToken
+// generation plus a still-loaded check keep a stale completion
+// from adding more than one in-flight chunk to a newer queue.
+// next()/prev()/jumpTo fall back to a fresh rotation when their
+// target is not loaded yet, so a 1-song window never dead-ends
+// a control.
+const HEAD_WINDOW = 1;
+const COMPLETION_CHUNK = 25;
+const COMPLETION_GAP_MS = 300;
 // setQueue with the v109.1 drop-and-retry: unresolvable NON-target
 // ids are dropped and the call retried; if the TARGET itself is
 // unresolvable it reports and returns null (never a substitute).
@@ -267,31 +279,37 @@ async function setQueueDroppingBad(songs, targetId) {
     }
   }
 }
+// A completion is stale once a newer queue request exists, or
+// once its target song is no longer in the loaded queue at all.
+function completionStale(gen, targetId) {
+  if (gen !== queueReqToken) return true;
+  const cur = loadedQueueIds();
+  return !cur.length || cur.indexOf(targetId) < 0;
+}
 function completeQueueInBackground(rest, targetId, gen) {
   if (!rest.length) return;
-  if (!music || !music.queue || typeof music.queue.append !== 'function') {
-    post({ type: 'log', message: 'queue completion unavailable (no queue.append); queue stays at head window' });
+  if (!music || typeof music.playLater !== 'function') {
+    post({ type: 'log', message: 'queue completion unavailable (no playLater); queue stays at head window' });
     return;
   }
   (async () => {
-    for (let i = 0; i < rest.length; i += 20) {
-      if (gen !== queueReqToken) return;
-      const cur = loadedQueueIds();
-      if (!cur.length || cur.indexOf(targetId) < 0) return;
-      const chunk = rest.slice(i, i + 20);
+    for (let i = 0; i < rest.length; i += COMPLETION_CHUNK) {
+      if (completionStale(gen, targetId)) return;
+      const chunk = rest.slice(i, i + COMPLETION_CHUNK);
       try {
-        await music.queue.append({ songs: chunk });
+        await music.playLater({ songs: chunk });
       } catch (e) {
         const bad = parseUnresolved(e);
         if (!bad.length) { post({ type: 'log', message: 'queue completion stopped: ' + String((e && e.message) || e) }); return; }
         const kept = chunk.filter(id => bad.indexOf(id) < 0);
         post({ type: 'log', message: 'queue completion dropped unresolvable ' + bad.join(', ') });
         if (!kept.length) continue;
-        try { await music.queue.append({ songs: kept }); }
+        try { await music.playLater({ songs: kept }); }
         catch (e2) { post({ type: 'log', message: 'queue completion stopped: ' + String((e2 && e2.message) || e2) }); return; }
       }
+      if (i + COMPLETION_CHUNK < rest.length) await new Promise(r => setTimeout(r, COMPLETION_GAP_MS));
     }
-    if (gen === queueReqToken) post({ type: 'log', message: 'queue completed in background (' + loadedQueueIds().length + ' songs)' });
+    if (!completionStale(gen, targetId)) post({ type: 'log', message: 'queue completed in background (' + loadedQueueIds().length + ' songs)' });
   })().catch(() => {});
 }
 // Shared by playQueue and jumpTo: head window in + play, rest later.
@@ -311,6 +329,25 @@ async function startRotated(rotatedAll, targetId, gen) {
   const rest = rotatedAll.slice(win.length).filter(id => !dropped.has(id));
   completeQueueInBackground(rest, targetId, gen);
   return true;
+}
+// Index of the now-playing song inside the app list, or -1.
+function appIndexOfCurrent() {
+  if (!music || !music.nowPlayingItem) return -1;
+  return appQueueIds.indexOf(String(music.nowPlayingItem.id));
+}
+// Rotate the app list so targetId heads a fresh queue. Used when
+// a control's target is not in the loaded queue yet (e.g. Next
+// tapped while the background completion is still landing): the
+// control re-queues instead of dead-ending. Bumping the
+// generation also retires any stale completion.
+async function startFromAppList(targetId) {
+  const idx = appQueueIds.indexOf(targetId);
+  if (idx < 0) return false;
+  const rotated = appQueueIds.slice(idx).concat(appQueueIds.slice(0, idx));
+  const gen = ++queueReqToken;
+  const ok = await startRotated(rotated, targetId, gen);
+  if (ok) queueOffset = idx;
+  return ok;
 }
 
 window.AoiEngine = {
@@ -357,7 +394,7 @@ window.AoiEngine = {
       // Modes BEFORE setQueue: startPlaying begins inside it.
       music.shuffleMode = sh ? 1 : 0;
       music.repeatMode = mkRepeat(rp);
-      // v109.8: head window first, the rest of the queue lands in
+      // v109.9: tapped song first, the rest of the queue lands in
       // the background (see startRotated).
       const okStart = await startRotated(rotated, targetId, token);
       if (okStart) queueOffset = start;
@@ -374,8 +411,44 @@ window.AoiEngine = {
   },
   play() { if (music) return op(() => bounded(music.play(), playTimeoutMs())).catch(() => {}); },
   pause() { if (music) return op(() => bounded(music.pause(), playTimeoutMs())).catch(() => {}); },
-  next() { if (music) return op(() => bounded(music.skipToNextItem(), playTimeoutMs())).catch(() => {}); },
-  prev() { if (music) return op(() => bounded(music.skipToPreviousItem(), playTimeoutMs())).catch(() => {}); },
+  next() {
+    if (!music) return;
+    return op(async () => {
+      const items = (music.queue && music.queue.items) || [];
+      const pos = music.queue ? music.queue.position : -1;
+      if (typeof pos === 'number' && pos >= 0 && pos < items.length - 1) {
+        await bounded(music.skipToNextItem(), playTimeoutMs());
+        return;
+      }
+      // At the tail of the LOADED queue: the next song in the app
+      // list may simply not have landed yet (background completion
+      // still running). Rotate to it instead of dead-ending.
+      const ci = appIndexOfCurrent();
+      if (ci >= 0 && ci < appQueueIds.length - 1) {
+        post({ type: 'log', message: 'next: target not loaded yet, rotating' });
+        await startFromAppList(appQueueIds[ci + 1]);
+        return;
+      }
+      await bounded(music.skipToNextItem(), playTimeoutMs());
+    }).catch(() => {});
+  },
+  prev() {
+    if (!music) return;
+    return op(async () => {
+      const pos = music.queue ? music.queue.position : -1;
+      if (typeof pos === 'number' && pos > 0) {
+        await bounded(music.skipToPreviousItem(), playTimeoutMs());
+        return;
+      }
+      const ci = appIndexOfCurrent();
+      if (ci > 0) {
+        post({ type: 'log', message: 'prev: target not loaded yet, rotating' });
+        await startFromAppList(appQueueIds[ci - 1]);
+        return;
+      }
+      await bounded(music.skipToPreviousItem(), playTimeoutMs());
+    }).catch(() => {});
+  },
   jumpTo(i) {
     if (!music) return;
     return op(async () => {
@@ -393,9 +466,15 @@ window.AoiEngine = {
         return;
       }
       const pos = cur.indexOf(targetId);
-      if (pos < 0) { post({ type: 'log', message: 'jumpTo: target ' + targetId + ' not in engine queue' }); return; }
+      if (pos < 0) {
+        // Not loaded yet (background completion still landing):
+        // rotate from the app list instead of dead-ending.
+        post({ type: 'log', message: 'jumpTo: target ' + targetId + ' not loaded yet, rotating from app list' });
+        await startFromAppList(targetId);
+        return;
+      }
       const rotated = cur.slice(pos).concat(cur.slice(0, pos));
-      // v109.8: same two-phase start as playQueue; bumping the
+      // v109.9: same two-phase start as playQueue; bumping the
       // generation also retires any background completion still
       // running for the previous queue.
       const gen = ++queueReqToken;
