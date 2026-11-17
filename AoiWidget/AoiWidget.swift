@@ -144,7 +144,7 @@ struct NPWidgetView: View {
     // the glass branch is always the one taken there; older systems
     // just get the tinted glyph.
     @ViewBuilder
-    private func glassGlyph(_ glyph: Image) -> some View {
+    private func glassGlyph<G: View>(_ glyph: G) -> some View {
         if #available(iOS 26.0, *) {
             Rectangle()
                 .fill(.white.opacity(0.001))
