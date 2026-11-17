@@ -34,15 +34,21 @@ struct SearchView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .aoiGlass(corner: 22)
-        .padding(.top, 14)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            searchBar
-                .padding(.horizontal, 6)
+        // v114: the search field is an OVERLAY pinned to the page's top,
+        // not a row in the layout flow - focus, keyboard and scrolling
+        // have no path that can move it (v107 took it out of the scroll
+        // view; on tap it still rode the keyboard avoidance up under
+        // the notch). Its top inset comes from the geometry's own safe
+        // area, so it always lands fully below the notch; the scroll
+        // content carries a matching fixed top spacer.
+        GeometryReader { geo in
+        ZStack(alignment: .top) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
+                Color.clear.frame(height: 66)
 
                 if !searched {
                     if !player.searchHistory.isEmpty {
@@ -121,6 +127,10 @@ struct SearchView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.hidden)
+            searchBar
+                .padding(.horizontal, 6)
+                .padding(.top, geo.safeAreaInsets.top + 4)
+        }
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
