@@ -13,7 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.1';
+window.ENGINE_VERSION = '109.2';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -169,21 +169,45 @@ window.AoiEngine = {
       // web app's player used the same trick. Any mismatch, shuffle
       // being on, or a failed jump falls back to the full reload.
       let jumped = false;
+      let jumpErr = null;
       if (!sh) {
         const cur = loadedQueueIds();
         if (cur.length === ids.length && cur.every((v, i) => v === String(ids[i]))) {
-          try {
-            await music.changeToMediaAtIndex(start);
-            jumped = true;
-            post({ type: 'log', message: 'playQueue: same queue, jump to ' + start });
-          } catch (e) {
-            post({ type: 'log', message: 'same-queue jump failed, reloading: ' + String((e && e.message) || e) });
+          const tJump = Date.now();
+          for (let j = 0; j < 2 && !jumped; j++) {
+            try {
+              await music.changeToMediaAtIndex(start);
+              jumped = true;
+              post({ type: 'log', message: 'playQueue: same queue, jump to ' + start + ' settled in ' + (Date.now() - tJump) + 'ms' });
+            } catch (e) {
+              jumpErr = e;
+              post({ type: 'log', message: 'jump attempt ' + (j + 1) + ' failed: ' + String((e && e.message) || e) });
+            }
+          }
+          // v109.2: an ABORTED jump must not escalate into a full
+          // setQueue reload - on device that turned one interrupted
+          // jump into an 81s reload (2026-11-17 12:50 log). An abort
+          // means the load was interrupted, not that the queue is
+          // wrong: if the loaded queue is still exactly this list,
+          // skip the reload and just play. Non-abort jump errors keep
+          // the old behaviour (reload below) - something is genuinely
+          // wrong with jumping, and the reload at least plays.
+          if (!jumped && jumpErr && isAbort(jumpErr)) {
+            const cur2 = loadedQueueIds();
+            if (cur2.length === ids.length && cur2.every((v, i) => v === String(ids[i]))) {
+              jumped = true;
+              post({ type: 'log', message: 'jump aborted, queue intact - skipping reload' });
+            }
+          }
+          if (!jumped && jumpErr && !isAbort(jumpErr)) {
+            post({ type: 'log', message: 'same-queue jump failed, reloading: ' + String((jumpErr && jumpErr.message) || jumpErr) });
           }
         }
       }
       let playIndex = start;
       if (!jumped) {
         post({ type: 'log', message: 'playQueue start (' + ids.length + ' songs @' + start + ')' });
+        const tQ = Date.now();
         // v109.1 drop-and-retry: MusicKit rejects the WHOLE setQueue
         // when even one id cannot be resolved in this storefront
         // (observed on device 2026-11-17: a 38-song list died on one
@@ -212,6 +236,7 @@ window.AoiEngine = {
             if (playIndex >= attemptIds.length) playIndex = attemptIds.length - 1;
           }
         }
+        post({ type: 'log', message: 'setQueue settled in ' + (Date.now() - tQ) + 'ms' });
       }
       // Apply the CAPTURED modes, not the globals: setShuffle/setRepeat
       // may have run during the await and rewritten the globals (the
@@ -222,7 +247,9 @@ window.AoiEngine = {
         try { await music.changeToMediaAtIndex(playIndex); }
         catch (e) { post({ type: 'log', message: 'jump after setQueue failed: ' + String((e && e.message) || e) }); }
       }
+      const tPlay = Date.now();
       await music.play();
+      post({ type: 'log', message: 'play settled in ' + (Date.now() - tPlay) + 'ms' });
       post({ type: 'log', message: 'playQueue settled in ' + (Date.now() - t0) + 'ms' });
     }).catch(e => reportErr('playQueue', e));
   },
