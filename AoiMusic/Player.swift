@@ -179,8 +179,8 @@ final class Player: ObservableObject {
         }
         // v117 (GPT round 4): the engine is the single owner of
         // preview recovery - these are its verdicts, not requests.
-        engine.onPreviewHealed = { [weak self] id in self?.handlePreviewHealed(id) }
-        engine.onPreviewExhausted = { [weak self] id in self?.handlePreviewExhausted(id) }
+        engine.onPreviewHealed = { [weak self] id, gen in self?.handlePreviewHealed(id, generation: gen) }
+        engine.onPreviewExhausted = { [weak self] id, gen in self?.handlePreviewExhausted(id, generation: gen) }
     }
 
     // MARK: - v114 preview-substitution detection + recovery
@@ -196,7 +196,7 @@ final class Player: ObservableObject {
         // when a fix was merely attempted (GPT round 2d).
         if isPreviewClip, let tgt = previewRecoveryTargetID, cur.playbackId == tgt,
            let exp = cur.attributes?.durationInMillis, exp > 90_000,
-           d >= 45 || d >= Double(exp) / 1000 * 0.6 {
+           d >= max(45, Double(exp) / 1000 * 0.6) {
             isPreviewClip = false
             previewRecoveryTargetID = nil
             previewForceTriedAt[tgt] = nil
@@ -231,7 +231,7 @@ final class Player: ObservableObject {
 
     // v117: the engine reports the song healed - clear the badge
     // and the bookkeeping for exactly that song.
-    private func handlePreviewHealed(_ id: String) {
+    private func handlePreviewHealed(_ id: String, generation: Int) {
         guard !id.isEmpty else { return }
         previewForceTriedAt[id] = Date()
         if isPreviewClip, current?.playbackId == id {
@@ -246,7 +246,7 @@ final class Player: ObservableObject {
     // v117: the engine gave up on the same-id heal - NOW the
     // storefront twin swap (v116's stage 2) may run, once per song.
     // This is the ONLY trigger for cross-storefront resolution.
-    private func handlePreviewExhausted(_ id: String) {
+    private func handlePreviewExhausted(_ id: String, generation: Int) {
         guard let cur = current, cur.playbackId == id, isPreviewClip else { return }
         guard !previewStorefrontTried.contains(id) else { return }
         previewStorefrontTried.insert(id)
@@ -257,7 +257,11 @@ final class Player: ObservableObject {
             let fixed = await self.api.resolveInStorefront(cur)
             guard self.queueGeneration == genS, self.current?.playbackId == keyS else { return }
             guard let fixed = fixed, fixed.id != cur.playbackId, fixed.id != cur.id else {
-                self.showToast(Strings.get("preview_only", self.lang))
+                // v118: a failed twin lookup is NOT proof of a region
+                // lock (GPT round 5, B5) - the old code toasted
+                // "preview only in this region" for network and auth
+                // failures too. Log it and keep the badge honest.
+                self.engine.logEvent("preview exhausted for \(keyS) (gen \(generation)): no storefront twin found - no toast, badge stays")
                 return
             }
             var list = self.queue
@@ -576,6 +580,8 @@ final class Player: ObservableObject {
         // so stations are handled by a dedicated JS call:
         useEngine = true
         av.pause()
+        queue = []
+        index = 0
         engine.callStation(st.id)
         isPlaying = true
     }
@@ -857,6 +863,7 @@ final class Player: ObservableObject {
 
     // MARK: - lock screen / remote
     private var lastArtworkKey = ""
+    private var artworkFetchesInFlight: Set<String> = []
     private var lastArtworkImage: UIImage?
     // v115: the iOS 26 animated artwork object, boxed as AnyObject
     // so the property itself needs no availability annotation.
@@ -897,14 +904,23 @@ final class Player: ObservableObject {
         // fetch the artwork once per song, not once per event
         // (GPT review Q5.7).
         let artKey = cur.playbackId + "|" + (cur.art(512, 512) ?? "")
-        if artKey != lastArtworkKey, let artStr = cur.art(512, 512), let url = URL(string: artStr) {
-            lastArtworkKey = artKey
+        if artKey != lastArtworkKey, !artworkFetchesInFlight.contains(artKey),
+           let artStr = cur.art(512, 512), let url = URL(string: artStr) {
+            artworkFetchesInFlight.insert(artKey)
             URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-                guard let data = data, let img = UIImage(data: data) else { return }
-                WidgetShared.publishArtwork(data)
                 DispatchQueue.main.async {
                     guard let self = self else { return }
+                    self.artworkFetchesInFlight.remove(artKey)
+                    guard let data = data, let img = UIImage(data: data) else { return }
+                    // v118: the key counts as fetched only now that
+                    // bytes actually arrived (a failed fetch used to
+                    // mark it forever). And a completion for a song
+                    // the user already left must not stamp its cover
+                    // onto the current one.
+                    guard self.current?.playbackId == cur.playbackId else { return }
+                    self.lastArtworkKey = artKey
                     self.lastArtworkImage = img
+                    WidgetShared.publishArtwork(data)
                     var i2 = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? info
                     i2[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
                     MPNowPlayingInfoCenter.default().nowPlayingInfo = i2
@@ -955,6 +971,12 @@ final class Player: ObservableObject {
     // download/export the SAME destination concurrently; now both
     // await one shared task per song+aspect, and exports land via
     // a temp file that moves into place atomically.
+    private func motionFileURL(song: Song, aspect: String) -> URL? {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        return caches.appendingPathComponent("motion", isDirectory: true)
+            .appendingPathComponent(song.playbackId + "-" + aspect + ".mp4")
+    }
+
     private func prepareMotionFile(song: Song, urlString: String, aspect: String) async -> URL? {
         let key = song.playbackId + "-" + aspect
         guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
@@ -1010,8 +1032,60 @@ final class Player: ObservableObject {
             return dst
         }
         try? FileManager.default.removeItem(at: tmpOut)
-        engine.logEvent("animated artwork: HLS export failed for \(key) (status \(export.status.rawValue))")
-        return nil
+        let errDesc: String
+        if let e = export.error { let ne = e as NSError; errDesc = "\(ne.domain) \(ne.code) \(ne.localizedDescription)" } else { errDesc = "no error object" }
+        engine.logEvent("animated artwork: HLS export failed for \(key) (status \(export.status.rawValue): \(errDesc)) - trying segment concat")
+        return await fetchHLSByConcat(src: srcURL, dst: dst, key: key)
+    }
+
+    // v118 fallback for the passthrough export (device evidence:
+    // status 4 on Apple's editorial HLS). That HLS is fMP4 - an
+    // init segment plus media segments - and those bytes concatenate
+    // into a playable mp4 as-is. TS playlists are detected and
+    // skipped: concatenating TS would produce a broken file.
+    private func fetchHLSByConcat(src: URL, dst: URL, key: String) async -> URL? {
+        do {
+            let (plData, _) = try await URLSession.shared.data(from: src)
+            guard let text = String(data: plData, encoding: .utf8) else { return nil }
+            var initURI: String? = nil
+            var segmentURIs: [String] = []
+            for raw in text.split(separator: "\n") {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("#EXT-X-MAP:") {
+                    if let m = line.range(of: "URI=\""),
+                       let e = line[m.upperBound...].firstIndex(of: "\"") {
+                        initURI = String(line[m.upperBound..<e])
+                    }
+                } else if !line.hasPrefix("#"), !line.isEmpty {
+                    segmentURIs.append(line)
+                }
+            }
+            guard !segmentURIs.isEmpty else { return nil }
+            if segmentURIs[0].lowercased().hasSuffix(".ts") {
+                engine.logEvent("animated artwork: HLS is TS segments for \(key) - concat not applicable")
+                return nil
+            }
+            var bytes = Data()
+            if let initURI = initURI, let u = URL(string: initURI, relativeTo: src) {
+                let (d, _) = try await URLSession.shared.data(from: u.absoluteURL)
+                bytes.append(d)
+            }
+            for seg in segmentURIs {
+                guard let u = URL(string: seg, relativeTo: src) else { return nil }
+                let (d, _) = try await URLSession.shared.data(from: u.absoluteURL)
+                bytes.append(d)
+            }
+            guard bytes.count > 10_000 else { return nil }
+            let tmp = dst.deletingPathExtension().appendingPathExtension("cat-" + String(UUID().uuidString.prefix(8)) + ".mp4")
+            try bytes.write(to: tmp)
+            try? FileManager.default.removeItem(at: dst)
+            try FileManager.default.moveItem(at: tmp, to: dst)
+            engine.logEvent("animated artwork: HLS segments concatenated for \(key) (\(bytes.count) bytes)")
+            return dst
+        } catch {
+            engine.logEvent("animated artwork: HLS concat failed for \(key): \(error.localizedDescription)")
+            return nil
+        }
     }
 
     // v117: per-song retry bookkeeping for the animated key. The
@@ -1079,18 +1153,36 @@ final class Player: ObservableObject {
                         })
                     artworks[propKey] = animated
                 }
-                self.animatedArtworkBox = (songId, artworks)
                 // Prefetch in the foreground (v116) so the file is
                 // ready before the system asks on the lock screen.
                 for (aspect, u) in jobs {
                     _ = await self.prepareMotionFile(song: song, urlString: u, aspect: aspect)
                 }
                 guard self.current?.playbackId == songId else { return }
+                // v118 (B4): publish - and log - only the keys whose
+                // file is actually on disk. v116/v117 logged
+                // "attached" even when the HLS export had failed
+                // (status 4), so the lock screen silently kept the
+                // static cover while the log claimed success.
+                var ready: [String: AnyObject] = [:]
+                for (aspect, _) in jobs {
+                    let propKey = aspect == "sq" ? MPNowPlayingInfoProperty1x1AnimatedArtwork : MPNowPlayingInfoProperty3x4AnimatedArtwork
+                    if let f = self.motionFileURL(song: song, aspect: aspect),
+                       FileManager.default.fileExists(atPath: f.path),
+                       let a = artworks[propKey] {
+                        ready[propKey] = a
+                    }
+                }
+                self.animatedArtworkBox = (songId, ready)
                 var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
                 info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: preview.size) { _ in preview }
-                for (k, v) in artworks { info[k] = v }
+                for (k, v) in ready { info[k] = v }
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-                self.engine.logEvent("animated artwork: attached for \(songId) (\(artworks.count) key(s))")
+                if ready.isEmpty {
+                    self.engine.logEvent("animated artwork: no motion file ready for \(songId) - static cover kept")
+                } else {
+                    self.engine.logEvent("animated artwork: attached for \(songId) (\(ready.count) of \(artworks.count) key(s))")
+                }
             }
         }
     }

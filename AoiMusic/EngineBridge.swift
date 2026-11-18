@@ -52,9 +52,8 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     var onProgress: ((Double, Double, Bool) -> Void)?
     var onError: ((String) -> Void)?
     var onForeground: (() -> Void)?
-    var onQueue: (([String]) -> Void)?
-    var onPreviewHealed: ((String) -> Void)?
-    var onPreviewExhausted: ((String) -> Void)?
+    var onPreviewHealed: ((String, Int) -> Void)?
+    var onPreviewExhausted: ((String, Int) -> Void)?
 
     func logEvent(_ s: String) {
         var lines = lastError.isEmpty ? [] : lastError.components(separatedBy: "\n")
@@ -72,6 +71,24 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         config.mediaTypesRequiringUserActionForPlayback = []
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
         let ucc = WKUserContentController()
+        // v118: stub JS dialogs in every frame (forMainFrameOnly:
+        // false). MusicKit surfaces fatal errors (MEDIA_KEY,
+        // "The operation was aborted.", "Load failed") through
+        // window.alert in frames the delegate never saw; the stub
+        // swallows them and reports each one to the Settings log.
+        let dialogStub = WKUserScript(source: #"""
+        (function () {
+          function report(kind, msg) {
+            try {
+              window.webkit.messageHandlers.aoi.postMessage({ type: 'jsdialog', kind: kind, message: String(msg == null ? '' : msg), host: String(location.host || '') });
+            } catch (e) {}
+          }
+          window.alert = function (m) { report('alert', m); };
+          window.confirm = function (m) { report('confirm', m); return false; };
+          window.prompt = function (m) { report('prompt', m); return null; };
+        })();
+        """#, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        ucc.addUserScript(dialogStub)
         config.userContentController = ucc
         webView = WKWebView(frame: .zero, configuration: config)
         // v112: transparent - the engine page paints nothing, and the
@@ -204,22 +221,26 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
             onProgress?((body["t"] as? Double) ?? 0, (body["d"] as? Double) ?? 0, (body["isPlaying"] as? Bool) ?? false)
         case "foreground":
             onForeground?()
-        case "queue":
-            onQueue?((body["ids"] as? [String]) ?? [])
         case "error":
             logEvent(((body["where"] as? String) ?? "engine") + ": " + ((body["message"] as? String) ?? ""))
             onError?((body["where"] as? String) ?? "engine")
         case "previewHealed":
-            onPreviewHealed?((body["id"] as? String) ?? "")
+            onPreviewHealed?((body["id"] as? String) ?? "", (body["generation"] as? NSNumber)?.intValue ?? -1)
         case "previewExhausted":
-            onPreviewExhausted?((body["id"] as? String) ?? "")
+            onPreviewExhausted?((body["id"] as? String) ?? "", (body["generation"] as? NSNumber)?.intValue ?? -1)
+        case "jsdialog":
+            // v118: a sub-frame dialog swallowed by the injected stub
+            // (see init). Logged with its kind and host so a future
+            // escape can be told apart from a stubbed one.
+            logEvent("page dialog stubbed [\((body["kind"] as? String) ?? "?") @ \((body["host"] as? String) ?? "?")]: \((body["message"] as? String) ?? "")")
         case "pong":
             if let n = (body["nonce"] as? NSNumber)?.intValue, n == pendingPongNonce {
                 pendingPongNonce = nil
                 let cb = pongCompletion
                 pongCompletion = nil
-                logEvent("engine health check ok (ready=\((body["ready"] as? Bool) ?? false))")
-                cb?()
+                let engineReady = (body["ready"] as? Bool) ?? false
+                logEvent("engine health check ok (ready=\(engineReady))")
+                cb?(engineReady)
             }
         default:
             break
@@ -357,7 +378,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     }
     // MARK: - v117 engine liveness (GPT round 4, problem 7)
     private var pendingPongNonce: Int? = nil
-    private var pongCompletion: (() -> Void)? = nil
+    private var pongCompletion: ((Bool) -> Void)? = nil
     private var pongNonceCounter = 0
     private var lastEngineReloadAt = Date.distantPast
 
@@ -381,7 +402,23 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         pongNonceCounter += 1
         let nonce = pongNonceCounter
         pendingPongNonce = nonce
-        pongCompletion = completion
+        pongCompletion = { [weak self] engineReady in
+            guard let self else { completion?(); return }
+            if engineReady { completion?(); return }
+            // The page answered but MusicKit never became ready
+            // (e.g. a configure failure the old init could not retry):
+            // treat it like a dead engine - one bounded reload.
+            self.logEvent("engine health check: page alive but MusicKit not ready - treating as not ready")
+            self.ready = false
+            self.pageLoaded = false
+            self.authStateKnown = false
+            if Date().timeIntervalSince(self.lastEngineReloadAt) > 30 {
+                self.lastEngineReloadAt = Date()
+                self.webView.reload()
+            }
+            self.startProbeTimer()
+            completion?()
+        }
         call("window.AoiEngine && AoiEngine.healthCheck && AoiEngine.healthCheck(\(nonce))")
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
             guard let self, self.pendingPongNonce == nonce else { return }
@@ -397,7 +434,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
                 self.webView.reload()
                 self.startProbeTimer()
             }
-            cb?()
+            cb?(false)
         }
     }
 

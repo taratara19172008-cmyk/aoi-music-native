@@ -34,7 +34,7 @@ window.alert = function (msg) {
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.17';
+window.ENGINE_VERSION = '109.18';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 // v109.13: alert plumbing (the override script sits before the
@@ -321,10 +321,14 @@ const healAttempts = {};
 const healTryAt = {};
 const healGiveUpLogged = {};
 let healLastTry = 0;
-async function rebuildQueueAtCurrent(seekBack) {
+async function rebuildQueueAtCurrent(seekBack, expectId) {
   const it = music && music.nowPlayingItem;
   if (!it) return false;
   const id = String(it.id);
+  if (expectId && id !== expectId) {
+    post({ type: 'log', message: 'preview heal: target changed to ' + id + ' while waiting - abandoning heal for ' + expectId });
+    return false;
+  }
   const idx = appQueueIds.indexOf(id);
   if (idx < 0) {
     post({ type: 'log', message: 'preview heal: current song is not in the app list, cannot rebuild' });
@@ -361,12 +365,13 @@ function previewHealTick(fromMediaKey) {
       // counter - then the asset landed as a preview again and the
       // whole cycle repeated, burning the session's attempts on
       // phantom successes.
-      const credible = d >= 45 || (exp > 0 && d >= exp * 0.6);
+      const credible = d >= Math.max(45, exp * 0.6);
       if (credible) {
         post({ type: 'log', message: 'preview heal: ' + id + ' is full-length now (' + Math.round(d) + 's)' });
         post({ type: 'previewHealed', id: id, generation: queueReqToken });
         delete healAttempts[id];
         delete healTryAt[id];
+        delete healGiveUpLogged[id];
       }
     }
     return;
@@ -399,7 +404,7 @@ function previewHealTick(fromMediaKey) {
   healLastTry = Date.now();
   const seekBack = t;
   post({ type: 'log', message: 'preview heal: ' + id + ' loaded as a ' + Math.round(d) + 's preview (catalog ' + Math.round(exp) + 's) - force-rebuilding the queue to re-acquire its license (attempt ' + (used + 1) + ')' });
-  op(async () => { healInFlight = true; try { await rebuildQueueAtCurrent(seekBack); } finally { healInFlight = false; } }).catch(() => {});
+  op(async () => { healInFlight = true; try { await rebuildQueueAtCurrent(seekBack, id); } finally { healInFlight = false; } }).catch(() => {});
 }
 
 // ---------- v109.10 diagnostics: JS heartbeat + visibility ----------
@@ -459,8 +464,11 @@ function assertMediaSession() {
 }
 
 let mkInitStarted = false;
+let mkInitFails = 0;
+let mkInitRetryAt = 0;
 async function initMK() {
   if (mkInitStarted || !window.MusicKit) return;
+  if (Date.now() < mkInitRetryAt) return;
   mkInitStarted = true;
   post({ type: 'log', message: 'configure start' });
   try {
@@ -474,7 +482,16 @@ async function initMK() {
     post({ type: 'ready' });
     sendAuth();
     authSnapshot('configure');
-  } catch (e) { post({ type: 'error', where: 'configure', message: String((e && e.message) || e) }); }
+  } catch (e) {
+    // v109.18: a failed configure must not brick init forever. Reset
+    // the flag and let mkPoll retry with backoff (1s, 3s, 8s, then
+    // every 8s) instead of never trying again.
+    mkInitStarted = false;
+    mkInitFails++;
+    const delay = mkInitFails <= 1 ? 1000 : (mkInitFails === 2 ? 3000 : 8000);
+    mkInitRetryAt = Date.now() + delay;
+    post({ type: 'error', where: 'configure', message: String((e && e.message) || e) + ' (init retry ' + mkInitFails + ' in ' + delay + 'ms)' });
+  }
 }
 document.addEventListener('musickitloaded', initMK);
 // the async script can execute before the listener above attaches (fast cache) — poll for the global as a fallback
@@ -834,8 +851,11 @@ window.AoiEngine = {
     // playQueue (a running one still finishes first, then this runs).
     queueReqToken++;
     return op(async () => {
+      appQueueIds = [];
+      queueSignature = '';
+      queueOffset = 0;
       const r1 = await bounded(music.setQueue({ station: id }), 15000);
-      if (r1.timeout) post({ type: 'log', message: 'station setQueue TIMED OUT after 15s (left running)' });
+      if (r1.timeout) { post({ type: 'log', message: 'station setQueue TIMED OUT after 15s - not starting playback (queue unconfirmed)' }); return; }
       else if (!r1.ok) throw r1.error;
       const r2 = await bounded(music.play(), playTimeoutMs());
       if (r2.timeout) post({ type: 'log', message: 'station play TIMED OUT (left running)' });

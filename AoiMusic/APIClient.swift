@@ -261,8 +261,18 @@ final class APIClient: ObservableObject {
     }
 
     func libraryPlaylists() async throws -> [CollectionItem] {
-        let r: ListResponse<CollectionItem> = try await get("/v1/me/library/playlists?limit=50")
-        return r.data ?? []
+        // v118: paginate - the old single limit=50 page silently
+        // truncated bigger libraries (GPT round 5).
+        var all: [CollectionItem] = []
+        var offset = 0
+        while offset < 500 {
+            let r: ListResponse<CollectionItem> = try await get("/v1/me/library/playlists?limit=100&offset=\(offset)")
+            let items = r.data ?? []
+            all += items
+            if items.count < 100 { break }
+            offset += 100
+        }
+        return all
     }
     func librarySongs() async throws -> [Song] {
         // Resolve every library song to its catalog counterpart (v106), the
@@ -278,13 +288,25 @@ final class APIClient: ObservableObject {
         struct LibRels: Codable { var catalog: CatRel? }
         struct CatRel: Codable { var data: [CatStub]? }
         struct CatStub: Codable { var id: String }
-        let r: ListResponse<LibSong> = try await get("/v1/me/library/songs?include=catalog&limit=50")
-        let libs = r.data ?? []
+        // v118: paginate - the old single limit=50 page silently
+        // truncated bigger libraries (GPT round 5).
+        var libs: [LibSong] = []
+        var loffset = 0
+        while loffset < 1000 {
+            let page: ListResponse<LibSong>? = try? await get("/v1/me/library/songs?include=catalog&limit=100&offset=\(loffset)")
+            let items = page?.data ?? []
+            libs += items
+            if items.count < 100 { break }
+            loffset += 100
+        }
         let catIds = libs.compactMap { $0.relationships?.catalog?.data?.first?.id }
         var catMap: [String: Song] = [:]
         if !catIds.isEmpty {
-            let cr: ListResponse<Song>? = try? await get("/v1/catalog/\(storefront)/songs?ids=\(catIds.joined(separator: ","))")
-            for s in cr?.data ?? [] { catMap[s.id] = s }
+            for chunkStart in stride(from: 0, to: catIds.count, by: 100) {
+                let chunk = Array(catIds[chunkStart..<min(chunkStart + 100, catIds.count)])
+                let cr: ListResponse<Song>? = try? await get("/v1/catalog/\(storefront)/songs?ids=\(chunk.joined(separator: ","))")
+                for s in cr?.data ?? [] { catMap[s.id] = s }
+            }
         }
         return libs.map { lib in
             if let cid = lib.relationships?.catalog?.data?.first?.id, let cat = catMap[cid] {
@@ -465,9 +487,17 @@ final class APIClient: ObservableObject {
         // v115 (GPT review item 8): an empty candidate artist made
         // contains("") true, so any same-title song "matched".
         // Both sides normalized; empty artists never match.
-        return r?.results?.songs?.data?.first(where: { cand in
-            guard cand.title.lowercased().trimmingCharacters(in: .whitespaces) == wantT,
-                  !wantA.isEmpty else { return false }
+        let cands = (r?.results?.songs?.data ?? []).filter { cand in
+            cand.title.lowercased().trimmingCharacters(in: .whitespaces) == wantT && !wantA.isEmpty
+        }
+        // v118: prefer an exact normalized artist match; the old
+        // bidirectional substring test alone could pick a same-title
+        // song by a different artist whose name merely contains (or
+        // is contained in) the wanted one (GPT round 5).
+        if let exact = cands.first(where: { cand in
+            cand.artist.lowercased().trimmingCharacters(in: .whitespaces) == wantA
+        }) { return exact }
+        return cands.first(where: { cand in
             let ca = cand.artist.lowercased().trimmingCharacters(in: .whitespaces)
             guard !ca.isEmpty else { return false }
             return ca.contains(wantA) || wantA.contains(ca)

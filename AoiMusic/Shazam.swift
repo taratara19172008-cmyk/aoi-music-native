@@ -33,6 +33,7 @@ final class ShazamRecognizer: NSObject, ObservableObject {
     // started - recognition must not stop it, so an activation
     // that still manages to pause it gets quietly undone.
     private var wasPlayingBeforeListen = false
+    private var isStarting = false
     private var startedAt = Date()
 
     func attach(player: Player, api: APIClient, nav: AppNav, settings: AppSettings) {
@@ -53,11 +54,13 @@ final class ShazamRecognizer: NSObject, ObservableObject {
     }
 
     private func start() {
-        guard let settings = settings else { return }
+        guard let settings = settings, !isListening, !isStarting else { return }
+        isStarting = true
         AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
             Task { @MainActor in
                 guard let self = self else { return }
                 if !granted {
+                    self.isStarting = false
                     self.player?.showToast(Strings.get("shazam_mic", settings.lang))
                     return
                 }
@@ -93,12 +96,23 @@ final class ShazamRecognizer: NSObject, ObservableObject {
             audioEngine.prepare()
             try audioEngine.start()
         } catch {
+            let ne = error as NSError
+            player.engine.logEvent("shazam: beginListening failed (\(ne.domain) \(ne.code): \(ne.localizedDescription))")
+            isStarting = false
             cleanupAudio()
             player.showToast(Strings.get("shazam_fail", settings.lang))
             return
         }
         startedAt = Date()
         isListening = true
+        isStarting = false
+        // v118: the session switch interrupts MusicKit at the
+        // activation instant - counter it in the same instant,
+        // not 400ms later. The delayed force-resume loop below
+        // stays as the backstop.
+        if wasPlayingBeforeListen {
+            player.resumeAfterInterruption(force: true)
+        }
         // v115: unmistakable state feedback - a toast now, and the
         // root view shows a "listening" pill for the whole session.
         player.showToast(Strings.get("shazam_listening", settings.lang))
@@ -214,7 +228,12 @@ final class ShazamRecognizer: NSObject, ObservableObject {
         // the timeout. An error (e.g. the profile cannot run
         // ShazamKit) fails fast instead of spinning for 12s.
         guard isListening, let error = error else { return }
-        _ = error
+        let ne = error as NSError
+        var desc = "shazam: match failed (\(ne.domain) \(ne.code): \(ne.localizedDescription))"
+        if let she = error as? SHError, she.code == .matchAttemptFailed {
+            desc += " [matchAttemptFailed: Shazam catalog service failure]"
+        }
+        player?.engine.logEvent(desc)
         stop()
         if let p = player, let st = settings {
             p.showToast(Strings.get("shazam_fail", st.lang))
