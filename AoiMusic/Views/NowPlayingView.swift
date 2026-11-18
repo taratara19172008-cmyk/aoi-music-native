@@ -29,6 +29,7 @@ struct NowPlayingView: View {
     @State private var lyricsNote: String = ""
     @State private var lyricsSongId: String = ""
     @State private var motionURLStr: String?
+    @State private var motionReady = false
     @State private var motionSongId: String = ""
     @State private var palette: CoverPalette?
     @State private var dismissDrag: CGFloat = 0
@@ -152,12 +153,21 @@ struct NowPlayingView: View {
 
     private var artworkPanel: some View {
         ZStack {
+            // v116 (her report): the static cover is ALWAYS the base
+            // layer. Before, a song with a motion cover rendered
+            // ONLY the video layer - when that stream stalled (the
+            // same throttled windows as everything else) the panel
+            // sat completely blank while the song played fine. The
+            // video now overlays only once it reports ready, and a
+            // failed video removes itself, leaving the cover.
+            ArtworkImage(urlString: player.current?.art(800, 800), size: 320, corner: 24)
             if let m = motionURLStr, let u = URL(string: m) {
-                LoopingVideo(url: u)
+                LoopingVideo(url: u,
+                             onReady: { motionReady = true },
+                             onFail: { motionURLStr = nil; motionReady = false })
                     .frame(width: 320, height: 320)
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            } else {
-                ArtworkImage(urlString: player.current?.art(800, 800), size: 320, corner: 24)
+                    .opacity(motionReady ? 1 : 0)
             }
         }
         .shadow(color: Color.black.opacity(0.30), radius: 24, y: 12)
@@ -406,6 +416,7 @@ struct NowPlayingView: View {
         guard let cur = player.current, cur.id != motionSongId else { return }
         motionSongId = cur.id
         motionURLStr = nil
+        motionReady = false
         Task {
             let u = await api.motionURLForSong(cur)
             if player.current?.id == cur.id { motionURLStr = u }
