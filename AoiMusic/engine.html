@@ -8,14 +8,41 @@
 window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZCI6IldlYlBsYXlLaWQifQ.eyJpc3MiOiJBTVBXZWJQbGF5IiwiaWF0IjoxNzkzOTAwNzA4LCJleHAiOjE3OTk5NDg3MDgsInJvb3RfaHR0cHNfb3JpZ2luIjpbImFwcGxlLmNvbSJdfQ.7L-PYJHjO8PpFdhKS-OSkf_snyFvg5cq-JDERUs_N_UcUX9Vk0kf1WLatgDeEvhB_Arg1b5Tl-99G1v6hUwH0A", relayBase: "https://aoi-relay.vercel.app/api/relay" };
 </script>
 <script>window.__mkScript = 'pending';</script>
+<script>
+// v109.13: window.alert is rerouted into the engine log (the main
+// script drains __aoiAlerts once post() exists). MusicKit JS raises
+// its fatal playback errors - MEDIA_KEY, the FairPlay key exchange -
+// through alert(); on device that plastered a raw native dialog over
+// the Settings page. A MEDIA_KEY alert also pokes the preview
+// self-heal, because a failed key exchange is exactly how a song
+// ends up with a 30-second preview asset.
+window.__aoiAlerts = [];
+window.__aoiPostAlert = null;
+window.__aoiOnMediaKey = null;
+window.alert = function (msg) {
+  var s = String(msg);
+  window.__aoiAlerts.push(s);
+  if (window.__aoiPostAlert) { try { window.__aoiPostAlert(s); } catch (e) {} }
+  if (s.indexOf('MEDIA_KEY') >= 0) {
+    window.__aoiMediaKeyAt = Date.now();
+    if (window.__aoiOnMediaKey) { try { window.__aoiOnMediaKey(); } catch (e) {} }
+  }
+};
+</script>
 <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" async onload="window.__mkScript='loaded'" onerror="window.__mkScript='error'"></script>
 </head>
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.12';
+window.ENGINE_VERSION = '109.13';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
+// v109.13: alert plumbing (the override script sits before the
+// MusicKit tag, ahead of post()).
+window.__aoiPostAlert = function (s) { post({ type: 'log', message: 'page alert suppressed: ' + String(s).slice(0, 200) }); };
+(window.__aoiAlerts || []).forEach(function (s) { window.__aoiPostAlert(s); });
+window.__aoiAlerts = [];
+window.__aoiOnMediaKey = function () { previewHealTick(true); };
 const swReady = Promise.resolve();
 let music = null;
 
@@ -149,6 +176,10 @@ function mutate(fn) {
 // (just play; keep the in-flight completion alive) from 'same song,
 // different list' (must rebuild the queue).
 let queueSignature = '';
+// v109.13: the last tapped song's full API resource, kept so a
+// forced queue rebuild (preview self-heal) can use the data form
+// for it again instead of paying a catalog fetch.
+let lastTargetResource = null;
 function op(fn) {
   const run = async () => { return await fn(); };
   const p = opChain.then(run, run);
@@ -192,7 +223,85 @@ function authSnapshot(tag) {
 setInterval(() => {
   if (!music) return;
   post({ type: 'progress', t: music.currentPlaybackTime || 0, d: music.currentPlaybackDuration || 0, isPlaying: !!music.isPlaying });
+  previewHealTick(false);
 }, 500);
+
+// ---------- v109.13: preview self-heal (the 30-second fix) ----------
+// What the 2026-11-18 09:05 device log proved: authorization was
+// FINE (auth[configure] isAuthorized=true, mut=yes) while songs kept
+// landing as 30s previews, with catalog fetches crawling at 26s -
+// the webPlayback/FairPlay license for those items failed inside a
+// throttled window and MusicKit silently substituted the preview
+// asset. The v115 Swift recovery then re-queued through playQueue,
+// whose same-list shortcut answered 'play only' - the loaded item
+// never re-ran license acquisition, so the recovery was a no-op.
+// The heal therefore lives HERE, where the asset duration is
+// visible: when the loaded asset is a preview of a full-length
+// catalog item, force a REAL queue rebuild (fresh setQueue, fresh
+// license), restore the position, at most twice per song, only
+// while the page is visible. Detection compares the loaded asset
+// (currentPlaybackDuration) against the catalog duration on the
+// item itself - no extra fetch.
+const healAttempts = {};
+const healGiveUpLogged = {};
+let healLastTry = 0;
+async function rebuildQueueAtCurrent(seekBack) {
+  const it = music && music.nowPlayingItem;
+  if (!it) return false;
+  const id = String(it.id);
+  const idx = appQueueIds.indexOf(id);
+  if (idx < 0) {
+    post({ type: 'log', message: 'preview heal: current song is not in the app list, cannot rebuild' });
+    return false;
+  }
+  const rotated = appQueueIds.slice(idx).concat(appQueueIds.slice(0, idx));
+  const gen = ++queueReqToken;
+  const resource = (lastTargetResource && String(lastTargetResource.id) === id) ? lastTargetResource : null;
+  const ok = await startRotated(rotated, id, gen, resource);
+  if (ok) {
+    queueOffset = idx;
+    if (seekBack && seekBack > 2) {
+      try { await bounded(music.seekToTime(seekBack), 5000); } catch (e) {}
+    }
+  }
+  return ok;
+}
+function previewHealTick(fromMediaKey) {
+  if (!music || !music.nowPlayingItem) return;
+  const it = music.nowPlayingItem;
+  const id = String(it.id || '');
+  if (!id) return;
+  const a = it.attributes || {};
+  const exp = a.durationInMillis ? a.durationInMillis / 1000 : 0;
+  if (!exp || exp <= 90) return;
+  const d = music.currentPlaybackDuration || 0;
+  const isPreview = d > 10 && d < 45 && d < exp * 0.6;
+  if (!isPreview) {
+    if (healAttempts[id]) {
+      post({ type: 'log', message: 'preview heal: ' + id + ' is full-length now (' + Math.round(d) + 's)' });
+      delete healAttempts[id];
+    }
+    return;
+  }
+  const t = music.currentPlaybackTime || 0;
+  if (!fromMediaKey && t < 2) return;
+  if (document.visibilityState !== 'visible') return;
+  const used = healAttempts[id] || 0;
+  if (used >= 2) {
+    if (!healGiveUpLogged[id]) {
+      healGiveUpLogged[id] = 1;
+      post({ type: 'log', message: 'preview heal: gave up on ' + id + ' after 2 rebuilds (asset still ' + Math.round(d) + 's vs catalog ' + Math.round(exp) + 's)' });
+      post({ type: 'error', where: 'previewHeal', message: 'preview persists for ' + id });
+    }
+    return;
+  }
+  if (Date.now() - healLastTry < 15000) return;
+  healAttempts[id] = used + 1;
+  healLastTry = Date.now();
+  const seekBack = t;
+  post({ type: 'log', message: 'preview heal: ' + id + ' loaded as a ' + Math.round(d) + 's preview (catalog ' + Math.round(exp) + 's) - force-rebuilding the queue to re-acquire its license (attempt ' + (used + 1) + ')' });
+  op(async () => { await rebuildQueueAtCurrent(seekBack); }).catch(() => {});
+}
 
 // ---------- v109.10 diagnostics: JS heartbeat + visibility ----------
 // The 2026-11-17 explosion had a 10s timer fire 77s late, which means
@@ -348,7 +457,7 @@ let appQueueIds = [];
 // a control.
 const HEAD_WINDOW = 1;
 const COMPLETION_CHUNK = 25;
-const COMPLETION_GAP_MS = 300;
+const COMPLETION_GAP_MS = 500;
 // setQueue with the v109.1 drop-and-retry: unresolvable NON-target
 // ids are dropped and the call retried; if the TARGET itself is
 // unresolvable it reports and returns null (never a substitute).
@@ -389,6 +498,15 @@ function completeQueueInBackground(rest, targetId, gen) {
   }
   (async () => {
     for (let i = 0; i < rest.length; i += COMPLETION_CHUNK) {
+      if (completionStale(gen, targetId)) return;
+      // v109.13: never feed the catalog while the page is hidden.
+      // On device, hidden-window fetches crawl (two catalog GETs
+      // took 26s each in the 2026-11-18 09:05 log) and the
+      // stampede poisons the session's license path too;
+      // completion simply resumes when the page is visible again.
+      while (document.hidden && !completionStale(gen, targetId)) {
+        await new Promise(r => setTimeout(r, 1500));
+      }
       if (completionStale(gen, targetId)) return;
       const chunk = rest.slice(i, i + COMPLETION_CHUNK);
       // v109.10: the append runs under the queue mutex and the
@@ -520,6 +638,17 @@ window.AoiEngine = {
       authSnapshot('recover-end');
     }).catch(() => {});
   },
+  // v109.13: the app's recovery paths call this instead of
+  // playQueue - playQueue's same-list shortcut would answer
+  // 'play only' and never re-acquire the license (the v115 no-op).
+  forceReload() {
+    if (!music) return;
+    return op(async () => {
+      const t = music.currentPlaybackTime || 0;
+      post({ type: 'log', message: 'forceReload: rebuilding the queue at the current song to re-acquire its license' });
+      await rebuildQueueAtCurrent(t);
+    }).catch(() => {});
+  },
   async unauthorize() {
     if (!music) return;
     try { await music.unauthorize(); } catch (e) {}
@@ -535,6 +664,7 @@ window.AoiEngine = {
     // Swift), parsed at call time like the modes above.
     let tData = null;
     if (targetData) { try { tData = typeof targetData === 'string' ? JSON.parse(targetData) : targetData; } catch (e) { tData = null; } }
+    lastTargetResource = tData;
     return op(async () => {
       // Coalescing: if a NEWER playQueue was requested while this one
       // waited its turn, skip it - only the latest queue matters.
