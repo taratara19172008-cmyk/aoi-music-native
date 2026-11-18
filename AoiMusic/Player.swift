@@ -29,6 +29,11 @@ final class Player: ObservableObject {
     // by a confirmed full-length asset or an unrelated track.
     private var previewRecoveryTargetID: String?
     private var pendingRegionToast = false
+    // v116: stage bookkeeping for the two-stage preview cure - a
+    // forced license reload first (timestamped per track), the
+    // storefront twin swap only if the asset stays a preview.
+    private var previewForceTriedAt: [String: Date] = [:]
+    private var previewStorefrontTried = Set<String>()
     private var queueGeneration = 0
     private var authRecoveryBusy = false
     private var lastForegroundRecovery = Date.distantPast
@@ -190,10 +195,43 @@ final class Player: ObservableObject {
            d >= 45 || d >= Double(exp) / 1000 * 0.6 {
             isPreviewClip = false
             previewRecoveryTargetID = nil
+            previewForceTriedAt[tgt] = nil
             engine.logEvent("preview recovery confirmed for \(tgt): asset duration \(Int(d))s")
             if pendingRegionToast {
                 pendingRegionToast = false
                 showToast(Strings.get("region_switched", lang))
+            }
+            return
+        }
+        // Stage 2 (v116): a forced reload already ran for this
+        // track and the asset is STILL a preview after it had time
+        // to land - the id itself is likely a foreign-storefront
+        // twin, so resolve it in the account storefront and swap.
+        if let triedAt = previewForceTriedAt[cur.playbackId],
+           Date().timeIntervalSince(triedAt) > 8,
+           !previewStorefrontTried.contains(cur.playbackId),
+           t >= 2, d > 10, d < 45,
+           let expS = cur.attributes?.durationInMillis, expS > 90_000,
+           d < Double(expS) / 1000 * 0.6 {
+            previewStorefrontTried.insert(cur.playbackId)
+            let keyS = cur.playbackId
+            let genS = queueGeneration
+            Task { [weak self] in
+                guard let self = self else { return }
+                let fixed = await self.api.resolveInStorefront(cur)
+                guard self.queueGeneration == genS, self.current?.playbackId == keyS else { return }
+                guard let fixed = fixed, fixed.id != cur.playbackId, fixed.id != cur.id else {
+                    self.showToast(Strings.get("preview_only", self.lang))
+                    return
+                }
+                var list = self.queue
+                for i in list.indices where list[i].playbackId == keyS || list[i].id == cur.id {
+                    list[i] = fixed
+                }
+                self.previewTried.insert(fixed.id)
+                self.previewRecoveryTargetID = fixed.playbackId
+                self.pendingRegionToast = true
+                self.playSongs(list, start: self.index, preservePreviewState: true)
             }
             return
         }
@@ -217,27 +255,17 @@ final class Player: ObservableObject {
                 self.runAuthRecovery(reason: "preview-clip")
                 return
             }
-            guard status == 200 else {
-                // Token fine on paper but the license path failed:
-                // re-queue the current list in the foreground to
-                // re-acquire the license (GPT round 3).
-                self.replayCurrentQueueForRecovery()
-                return
-            }
-            let fixed = await self.api.resolveInStorefront(cur)
-            guard self.queueGeneration == gen, self.current?.playbackId == key else { return }
-            guard let fixed = fixed, fixed.id != cur.playbackId, fixed.id != cur.id else {
-                self.showToast(Strings.get("preview_only", self.lang))
-                return
-            }
-            var list = self.queue
-            for i in list.indices where list[i].playbackId == key || list[i].id == cur.id {
-                list[i] = fixed
-            }
-            self.previewTried.insert(fixed.id)
-            self.previewRecoveryTargetID = fixed.playbackId
-            self.pendingRegionToast = true
-            self.playSongs(list, start: self.index, preservePreviewState: true)
+            // v116: authorized (or the probe answer unclear) - the
+            // cure is a forced queue rebuild that re-acquires the
+            // license. replayCurrentQueueForRecovery now calls the
+            // engine's forceReload, which playQueue's same-list
+            // shortcut cannot short-circuit (in v115 this path
+            // resolved the storefront FIRST and the plain re-queue
+            // path was a no-op). If the asset is still a preview
+            // afterwards, stage 2 (storefront twin swap) runs from
+            // the progress path above.
+            _ = gen
+            self.replayCurrentQueueForRecovery()
         }
     }
 
@@ -273,8 +301,9 @@ final class Player: ObservableObject {
     private func replayCurrentQueueForRecovery() {
         guard let cur = current, !queue.isEmpty, queue.indices.contains(index) else { return }
         previewRecoveryTargetID = cur.playbackId
-        engine.logEvent("recovery: re-queueing current list in foreground")
-        playSongs(queue, start: index, preservePreviewState: true)
+        previewForceTriedAt[cur.playbackId] = Date()
+        engine.logEvent("recovery: force-reloading the queue in the foreground to re-acquire the license")
+        engine.forceReloadQueue()
     }
 
     private func runAuthRecovery(reason: String) {
@@ -449,6 +478,15 @@ final class Player: ObservableObject {
             if av.timeControlStatus == .playing { av.pause(); isPlaying = false }
             else { av.play(); isPlaying = true }
         }
+    }
+
+    // v116 (Shazam): quietly resume playback that an audio-session
+    // activation interrupted, without toggling a state the user
+    // chose themselves.
+    func resumeAfterInterruption() {
+        guard current != nil, !isPlaying else { return }
+        if useEngine { engine.play(); isPlaying = true }
+        else { av.play(); isPlaying = true }
     }
 
     func next(auto: Bool = false) {
