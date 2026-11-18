@@ -39,10 +39,9 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
-                // v114: Shazam button in the open space left of the
-                // greeting; tap = listen, match = Now Playing opens.
+                // v115: the Shazam button moved to the top of the
+                // left rail (RootView) - the greeting stands alone.
                 HStack(alignment: .center, spacing: 12) {
-                    ShazamButton()
                     VStack(alignment: .leading, spacing: 2) {
                         Text(greeting)
                             .font(.system(size: 30, weight: .bold))
