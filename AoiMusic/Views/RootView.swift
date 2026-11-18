@@ -21,6 +21,9 @@ struct RootView: View {
     @EnvironmentObject var player: Player
     @EnvironmentObject var engine: EngineBridge
     @EnvironmentObject var nav: AppNav
+    @EnvironmentObject var api: APIClient
+    @EnvironmentObject var shazam: ShazamRecognizer
+    @Environment(\.scenePhase) private var scenePhase
     @State private var page: Page = .home
     private let mainPages: [Page] = [.home, .search, .radio, .library]
 
@@ -68,13 +71,65 @@ struct RootView: View {
                 .transition(.move(edge: .trailing))
                 .zIndex(5)
             }
+            // v115 (her spec): the Shazam button lives at the top
+            // of the left rail - the uppermost-left of the screen -
+            // not beside the Home greeting where v114 put it. The
+            // rail column starts at x=8 and is 74 wide, so 18pt of
+            // leading centres the 54pt button over it.
+            VStack {
+                HStack {
+                    ShazamButton()
+                        .padding(.leading, 18)
+                        .padding(.top, 2)
+                    Spacer()
+                }
+                Spacer()
+            }
+            // v115: while Shazam is listening, an unmistakable
+            // status pill rides the top centre - animated bars and
+            // the word Listening - so she always knows the state.
+            VStack {
+                if shazam.isListening {
+                    HStack(spacing: 8) {
+                        ListeningBars()
+                        Text(settings.t("shazam_listening"))
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .aoiGlass(corner: 20)
+                    .padding(.top, 2)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+                Spacer()
+            }
+            .animation(.easeInOut(duration: 0.25), value: shazam.isListening)
             ToastOverlay(text: player.toast)
         }
         .animation(.easeInOut(duration: 0.28), value: nav.detail)
+        .onChange(of: scenePhase) { _, phase in
+            // v115: the app returning to the foreground is a
+            // recovery trigger alongside the engine page's own
+            // visibility signal (Player decides if anything is
+            // actually wrong before acting).
+            if phase == .active { player.foregroundBecameVisible() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .aoiShazamSongTap)) { note in
+            if let sid = note.userInfo?["songId"] as? String {
+                NotificationPresenter.pendingSongId = nil
+                playShazamSong(sid)
+            }
+        }
         .fullScreenCover(isPresented: $nav.showNowPlaying) {
             NowPlayingView()
         }
-        .onAppear { WidgetShared.publishAccent(settings.accentHex) }
+        .onAppear {
+            WidgetShared.publishAccent(settings.accentHex)
+            if let sid = NotificationPresenter.pendingSongId {
+                NotificationPresenter.pendingSongId = nil
+                playShazamSong(sid)
+            }
+        }
         .onChange(of: settings.accentHex) { _, hex in WidgetShared.publishAccent(hex) }
     }
 
@@ -149,6 +204,43 @@ struct RootView: View {
         case .settings: SettingsView()
         case .ai: AIChatView()
         }
+    }
+}
+
+// A tapped Shazam notification lands here: resolve the song in
+// the account storefront and play it, Now Playing open - the tap
+// IS her asking to hear it.
+extension RootView {
+    func playShazamSong(_ id: String) {
+        Task {
+            if let s = await api.songFull(id: id) {
+                player.playSongs([s], start: 0)
+                nav.showNowPlaying = true
+            }
+        }
+    }
+}
+
+// Four little bars that dance while Shazam listens.
+struct ListeningBars: View {
+    @EnvironmentObject var settings: AppSettings
+    @State private var on = false
+    private let up: [CGFloat] = [0.45, 1.0, 0.6, 0.85]
+    private let down: [CGFloat] = [0.9, 0.5, 1.0, 0.55]
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<4, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(settings.accent)
+                    .frame(width: 3.5, height: 14)
+                    .scaleEffect(y: on ? up[i] : down[i])
+                    .animation(.easeInOut(duration: 0.5)
+                        .repeatForever(autoreverses: true)
+                        .delay(Double(i) * 0.13), value: on)
+            }
+        }
+        .onAppear { on = true }
     }
 }
 
