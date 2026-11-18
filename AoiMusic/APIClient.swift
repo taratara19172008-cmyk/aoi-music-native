@@ -562,10 +562,14 @@ final class APIClient: ObservableObject {
         }
     }
 
-    // MARK: - Motion artwork (animated covers) + artist videos
+    // MARK: - Motion artwork (in-app animated headers) + artist videos
     // editorialVideo lives behind ?extend=editorialVideo and is served by the amp
     // host; the value shape varies, so walk it like the web app does: preferred
     // variant keys first, then any video-looking URL in the object.
+    // (v120: the LOCK-SCREEN animated-artwork pipeline that also
+    // lived here - motionURLs/pickMotionURLs and Player's HLS
+    // fetch/export machinery - was removed wholesale at her
+    // decision; what remains serves only the in-app headers.)
     func motionURL(kind: String, id: String) async -> String? {
         for amp in [true, false] {
             if let data = try? await request(path: "/v1/catalog/\(storefront)/\(kind)/\(id)?extend=editorialVideo", amp: amp),
@@ -581,41 +585,6 @@ final class APIClient: ObservableObject {
             return await motionURL(kind: "albums", id: aid)
         }
         return nil
-    }
-    // v117 (GPT round 4): square and tall variants separately -
-    // the lock screen offers two independent animated keys and
-    // each wants its own aspect-matched video.
-    func motionURLs(kind: String, id: String) async -> (square: String?, tall: String?) {
-        for amp in [true, false] {
-            if let data = try? await request(path: "/v1/catalog/\(storefront)/\(kind)/\(id)?extend=editorialVideo", amp: amp) {
-                let r = Self.pickMotionURLs(data)
-                if r.square != nil || r.tall != nil { return r }
-            }
-        }
-        return (nil, nil)
-    }
-    func motionURLsForSong(_ song: Song) async -> (square: String?, tall: String?) {
-        if let aid = song.relationships?.albums?.data?.first?.id {
-            return await motionURLs(kind: "albums", id: aid)
-        }
-        if let full = await songFull(for: song), let aid = full.relationships?.albums?.data?.first?.id {
-            return await motionURLs(kind: "albums", id: aid)
-        }
-        return (nil, nil)
-    }
-    static func pickMotionURLs(_ data: Data) -> (square: String?, tall: String?) {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let arr = obj["data"] as? [[String: Any]],
-              let attrs = arr.first?["attributes"] as? [String: Any],
-              let ev = attrs["editorialVideo"] as? [String: Any] else { return (nil, nil) }
-        func pick(_ keys: [String]) -> String? {
-            for k in keys {
-                if let v = (ev[k] as? [String: Any])?["video"] as? String, !v.isEmpty { return v }
-            }
-            return nil
-        }
-        return (pick(["motionDetailSquare", "motionSquareVideo1x1"]),
-                pick(["motionDetailTall", "motionTallVideo3x4"]))
     }
     static func pickMotionURL(_ data: Data) -> String? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

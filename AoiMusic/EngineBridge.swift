@@ -364,7 +364,10 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     // v116: forced queue rebuild (engine 109.13) - the recovery
     // paths use this instead of playQueue, whose same-list shortcut
     // answered 'play only' and never re-acquired the license.
-    func forceReloadQueue() { call("window.AoiEngine && AoiEngine.forceReload()") }
+    // v120 (GPT v120 verdict): the Swift forceReloadQueue() wrapper
+    // is deleted along with the JS forceReload() entry it called -
+    // it was a second queue-recovery owner next to the engine's
+    // own preview heal.
     func playQueue(ids: [String], start: Int, shuffle: Bool, repeatMode: Int, targetJSON: String? = nil) {
         let arr = ids.map { jsString($0) }.joined(separator: ",")
         let dataArg = targetJSON.map { ", " + jsString($0) } ?? ""
