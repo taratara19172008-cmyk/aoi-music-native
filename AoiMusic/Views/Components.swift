@@ -284,14 +284,21 @@ struct SwipeDeleteRow<Content: View>: View {
     @State private var dragX: CGFloat = 0
     @State private var open = false
 
-    private let reveal: CGFloat = 74
+    private let reveal: CGFloat = 76
     private var shown: CGFloat {
         let base = open ? -reveal : 0
-        return min(8, max(-reveal - 26, base + dragX))
+        return min(10, max(-reveal - 130, base + dragX))
     }
 
     var body: some View {
         ZStack(alignment: .trailing) {
+            // v115 (her spec): Apple-native swipe action - a FLAT
+            // red rectangle flush with the row's trailing edge and
+            // full height (the row's own clip rounds the outer
+            // corners), stretching elastically as the swipe
+            // continues; a full swipe fires the action, like iOS.
+            // (v107-v114 drew a rounded red square floating inside
+            // the row with gaps at every edge.)
             Button {
                 close()
                 action()
@@ -299,9 +306,9 @@ struct SwipeDeleteRow<Content: View>: View {
                 Text(label)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
-                    .frame(width: reveal)
+                    .frame(width: max(reveal, -shown))
                     .frame(maxHeight: .infinity)
-                    .background(Color(red: 0.92, green: 0.16, blue: 0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(Color(red: 0.92, green: 0.16, blue: 0.22))
             }
             .buttonStyle(.plain)
             .opacity(shown < -2 ? 1 : 0)
@@ -323,9 +330,19 @@ struct SwipeDeleteRow<Content: View>: View {
                         }
                         .onEnded { v in
                             let end = (open ? -reveal : 0) + v.translation.width
-                            withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) {
-                                open = end < -reveal / 2
-                                dragX = 0
+                            if end < -(reveal + 70) {
+                                // Full swipe: fire, like the native
+                                // destructive swipe action.
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                    open = false
+                                    dragX = 0
+                                }
+                                action()
+                            } else {
+                                withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) {
+                                    open = end < -reveal / 2
+                                    dragX = 0
+                                }
                             }
                         }
                 )
@@ -458,8 +475,8 @@ struct CardPressMenu: ViewModifier {
                         }
                         if item.type == "albums" {
                             Button { player.toggleFavAlbum(item, lang: settings.lang) } label: {
-                                Label(settings.t(player.isFavAlbum(item.id) ? "fav_remove" : "fav_add"),
-                                      systemImage: player.isFavAlbum(item.id) ? "heart.slash" : "heart")
+                                Label(settings.t(player.isFavAlbumItem(item) ? "fav_remove" : "fav_add"),
+                                      systemImage: player.isFavAlbumItem(item) ? "heart.slash" : "heart")
                             }
                         }
                     }
@@ -470,6 +487,36 @@ struct CardPressMenu: ViewModifier {
             content
         }
     }
+}
+
+// v115 hero melt masks (album/playlist/artist heroes). Her spec:
+// the cover's BODY stays sharp - only a narrow band at the very
+// top and the very bottom blurs and fades into the page. The old
+// treatment ran a full-frame blurred copy under a bottom-only
+// fade, which turned the whole upper half to mush.
+// heroEdgeMask: the sharp layer - opaque through the middle,
+// easing out only inside the edge bands.
+// heroEdgeBlurMask: the blurred layer - visible ONLY inside the
+// edge bands, clear through the middle.
+var heroEdgeMask: LinearGradient {
+    LinearGradient(stops: [
+        .init(color: .clear, location: 0.0),
+        .init(color: .black.opacity(0.45), location: 0.05),
+        .init(color: .black, location: 0.12),
+        .init(color: .black, location: 0.86),
+        .init(color: .black.opacity(0.45), location: 0.94),
+        .init(color: .clear, location: 1.0),
+    ], startPoint: .top, endPoint: .bottom)
+}
+var heroEdgeBlurMask: LinearGradient {
+    LinearGradient(stops: [
+        .init(color: .black, location: 0.0),
+        .init(color: .black, location: 0.08),
+        .init(color: .clear, location: 0.17),
+        .init(color: .clear, location: 0.83),
+        .init(color: .black, location: 0.92),
+        .init(color: .black, location: 1.0),
+    ], startPoint: .top, endPoint: .bottom)
 }
 
 struct SectionTitle: View {
