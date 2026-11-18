@@ -2,16 +2,21 @@ import Foundation
 import AVFoundation
 import ShazamKit
 import SwiftUI
+import UserNotifications
 
 // v114: in-app Shazam （听音识曲）. Mic audio is fingerprinted on the
 // device by ShazamKit and matched against the Shazam catalog; a match
 // carries an Apple Music id + ISRC, which the app resolves in the
-// account's own storefront and plays at once (Now Playing opens by
-// itself). While listening, the app's own playback pauses so the mic
-// hears the room, not the speaker feed; it resumes if nothing was
-// found. If the signing profile cannot run ShazamKit, the session
-// error lands in the same "not available" toast - nothing else in
-// the app is touched by a failure here.
+// account's own storefront.
+// v115 (her trial feedback + GPT round 3): the record session mixes
+// with other audio instead of interrupting it (the old options: []
+// made .playAndRecord non-mixable, so starting a listen killed the
+// phone's music - the very thing there was to recognize), the app
+// no longer pauses its own playback, and a match is delivered as a
+// NOTIFICATION carrying the song card instead of auto-playing.
+// Platform limit, stated plainly: the mic hears speaker output;
+// audio playing into headphones is not capturable by third-party
+// apps (Apple's own Shazam is a privileged system service).
 @MainActor
 final class ShazamRecognizer: NSObject, ObservableObject {
     @Published var isListening = false
@@ -24,7 +29,6 @@ final class ShazamRecognizer: NSObject, ObservableObject {
     private var shSession: SHSession?
     private let audioEngine = AVAudioEngine()
     private var timeoutTask: Task<Void, Never>?
-    private var wasPlaying = false
     private var startedAt = Date()
 
     func attach(player: Player, api: APIClient, nav: AppNav, settings: AppSettings) {
@@ -35,7 +39,7 @@ final class ShazamRecognizer: NSObject, ObservableObject {
     }
 
     func toggle() {
-        if isListening { stop(restorePlayback: true) } else { start() }
+        if isListening { stop() } else { start() }
     }
 
     // Deep-link entry (the home-screen widget): same as tapping the
@@ -60,11 +64,18 @@ final class ShazamRecognizer: NSObject, ObservableObject {
 
     private func beginListening() {
         guard let player = player, let settings = settings else { return }
-        wasPlaying = player.isPlaying
-        if player.isPlaying { player.pauseOnly() }
         do {
             let av = AVAudioSession.sharedInstance()
-            try av.setCategory(.playAndRecord, mode: .default, options: [])
+            // v115 (GPT round 3): .mixWithOthers is the fix for
+            // "recording kills the phone's music" - without it,
+            // activating a .playAndRecord session interrupts every
+            // other non-mixable audio session on the phone. With
+            // it, other apps keep playing through the speaker and
+            // the mic hears them. Our own playback is NOT paused
+            // either (the old code paused it on purpose; with the
+            // mix fixed there is nothing to protect the mic from -
+            // speaker output is exactly what it should hear).
+            try av.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers])
             try av.setActive(true)
             try? audioEngine.inputNode.setVoiceProcessingEnabled(false)
             let format = audioEngine.inputNode.outputFormat(forBus: 0)
@@ -79,28 +90,28 @@ final class ShazamRecognizer: NSObject, ObservableObject {
         } catch {
             cleanupAudio()
             player.showToast(Strings.get("shazam_fail", settings.lang))
-            if wasPlaying { player.playOnly() }
             return
         }
         startedAt = Date()
         isListening = true
+        // v115: unmistakable state feedback - a toast now, and the
+        // root view shows a "listening" pill for the whole session.
+        player.showToast(Strings.get("shazam_listening", settings.lang))
         timeoutTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard let self = self, self.isListening else { return }
-            self.stop(restorePlayback: true)
+            self.stop()
             if let p = self.player, let st = self.settings {
                 p.showToast(Strings.get("shazam_none", st.lang))
             }
         }
     }
 
-    private func stop(restorePlayback: Bool) {
+    private func stop() {
         timeoutTask?.cancel()
         timeoutTask = nil
         cleanupAudio()
         isListening = false
-        if restorePlayback, wasPlaying { player?.playOnly() }
-        wasPlaying = false
     }
 
     private func cleanupAudio() {
@@ -117,8 +128,7 @@ final class ShazamRecognizer: NSObject, ObservableObject {
         timeoutTask = nil
         cleanupAudio()
         isListening = false
-        wasPlaying = false
-        guard let api = api, let player = player, let nav = nav, let settings = settings else { return }
+        guard let api = api, let player = player, let settings = settings else { return }
         Task {
             var song: Song? = nil
             if let amid = item.appleMusicID, !amid.isEmpty {
@@ -134,11 +144,18 @@ final class ShazamRecognizer: NSObject, ObservableObject {
                 song = await api.resolveInStorefront(probe)
             }
             guard let found = song else {
+                // v115 (GPT review item 13's lesson): a failed
+                // resolution must end in a clear message, never in
+                // silently stranded state.
                 player.showToast(Strings.get("shazam_none", settings.lang))
                 return
             }
-            player.playSongs([found], start: 0)
-            nav.showNowPlaying = true
+            // v115 (her spec): NO auto-play, no forced navigation -
+            // the match arrives as a notification carrying the
+            // song's card (cover, title, artist). Tapping it opens
+            // the song in the player (see AoiMusicApp/RootView).
+            await ShazamCardNotifier.post(song: found)
+            player.showToast(Strings.get("shazam_found", settings.lang))
         }
     }
 
@@ -149,10 +166,45 @@ final class ShazamRecognizer: NSObject, ObservableObject {
         // ShazamKit) fails fast instead of spinning for 12s.
         guard isListening, let error = error else { return }
         _ = error
-        stop(restorePlayback: true)
+        stop()
         if let p = player, let st = settings {
             p.showToast(Strings.get("shazam_fail", st.lang))
         }
+    }
+}
+
+// v115: delivers a recognized song as a local notification with
+// the cover attached - the "music card" she asked for. Permission
+// is requested lazily at the first match; if it is denied, the
+// in-app toast still names the outcome (the caller shows it).
+enum ShazamCardNotifier {
+    static func post(song: Song) async {
+        let center = UNUserNotificationCenter.current()
+        var status = await center.notificationSettings().authorizationStatus
+        if status == .notDetermined {
+            _ = try? await center.requestAuthorization(options: [.alert, .sound])
+            status = await center.notificationSettings().authorizationStatus
+        }
+        guard status == .authorized || status == .provisional else { return }
+        let content = UNMutableNotificationContent()
+        content.title = song.title
+        content.body = song.artist
+        content.sound = .default
+        content.categoryIdentifier = "aoi.shazamSong"
+        content.userInfo = ["songId": song.id]
+        if let artStr = song.art(512, 512), let url = URL(string: artStr),
+           let (data, _) = try? await URLSession.shared.data(from: url),
+           let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            let file = dir.appendingPathComponent("shazam-card-\(song.id).jpg")
+            if (try? data.write(to: file, options: .atomic)) != nil,
+               let att = try? UNNotificationAttachment(identifier: "art", url: file, options: nil) {
+                content.attachments = [att]
+            }
+        }
+        let req = UNNotificationRequest(
+            identifier: "shazam-\(song.id)-\(Int(Date().timeIntervalSince1970))",
+            content: content, trigger: nil)
+        try? await center.add(req)
     }
 }
 
