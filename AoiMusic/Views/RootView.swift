@@ -252,12 +252,12 @@ struct RootView: View {
 // in the root layout and re-laying-out individual branches (the
 // search overlay received widened / clipped / bottom-docked rects
 // in her recordings; the mini player floated up too). Setting
-// safeAreaRegions = .container on the hosting controller removes
-// the keyboard from SwiftUI layout entirely for as long as it is
-// set - the container regions (notch, status bar, home indicator)
-// are untouched. The regions are applied to the window's root
-// view controller and its children (whichever of them is the
-// hosting controller), and only logged when they actually change.
+// safeAreaRegions = .container on the hosting controller (the app
+// owns it since v119 - see AoiMusicApp) removes the keyboard from
+// SwiftUI layout entirely for as long as it is set; the container
+// regions (notch, status bar, home indicator) are untouched. The
+// value is read back after setting, so the log line proves the
+// state instead of assuming it.
 struct KeyboardRegionFixer: UIViewRepresentable {
     var active: Bool
     var onApply: (String) -> Void
@@ -285,21 +285,8 @@ struct KeyboardRegionFixer: UIViewRepresentable {
         }
 
         func applyRegions() {
-            guard let root = window?.rootViewController else { return }
-            let target: UIViewController.SafeAreaRegions = active ? .container : .all
-            var changed = false
-            func walk(_ vc: UIViewController) {
-                if vc.safeAreaRegions != target {
-                    vc.safeAreaRegions = target
-                    changed = true
-                }
-                vc.children.forEach(walk)
-            }
-            walk(root)
-            if changed {
-                onApply?(active
-                    ? "root keyboard safe area OFF (search page)"
-                    : "root keyboard safe area ON")
+            AoiHostingController.setKeyboardExcluded(active) { [weak self] msg in
+                self?.onApply?(msg)
             }
         }
     }
