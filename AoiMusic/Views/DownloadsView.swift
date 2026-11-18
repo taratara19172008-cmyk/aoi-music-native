@@ -125,6 +125,11 @@ struct FavoritesView: View {
         player.absorbFavSongs(apiSongs)
         let apiAlbums = await api.favoriteAlbums()
         player.absorbFavAlbums(apiAlbums)
+        // v115: hand the player the catalog<->library album id
+        // pairs so an un-favorite can delete in both rating spaces.
+        if let pairs = try? await api.libraryAlbumPairs() {
+            player.noteAlbumPairs(pairs)
+        }
         loading = false
         loaded = true
     }
