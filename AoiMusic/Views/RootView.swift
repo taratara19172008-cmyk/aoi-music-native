@@ -31,6 +31,17 @@ struct RootView: View {
     var body: some View {
         ZStack {
             background
+            // v119: while the search page is up, the keyboard safe
+            // area is excluded at the root hosting controller (see
+            // KeyboardRegionFixer below) - three rounds of in-layout
+            // shields (v115/v116/v118) all failed because the
+            // keyboard kept re-laying-out branches of this ZStack.
+            // With the keyboard out of the root layout entirely,
+            // every branch shares one stable coordinate system.
+            KeyboardRegionFixer(active: page == .search) { engine.logEvent($0) }
+                .frame(width: 1, height: 1)
+                .opacity(0)
+                .allowsHitTesting(false)
             // The engine's web view hosts at FULL size behind everything
             // (v108): at 1x1 WebKit treats the page as barely visible and
             // may throttle its timers and media pipeline, which the
@@ -72,19 +83,19 @@ struct RootView: View {
                 .transition(.move(edge: .trailing))
                 .zIndex(5)
             }
-            // v118 (B1): while the search page is up, the search
-            // field is an overlay pinned to the top safe area -
-            // the same anchoring as the Shazam overlay below, which
-            // has never moved. In-flow placement rode up with the
-            // keyboard in both v115 and v116.
+            // v119: the search field is a DIRECT child of the root
+            // ZStack, pinned by an explicit full-frame top-leading
+            // placement - no full-height VStack + Spacer anywhere
+            // in its ancestry (v118's overlay VStack received
+            // unstable layout rects during keyboard transitions:
+            // widened to the screen edge, clipped at the top, once
+            // even landed at the bottom of the screen).
             if page == .search {
-                VStack(spacing: 0) {
-                    SearchFieldView(term: $searchTerm)
-                        .padding(.leading, 98)
-                        .padding(.trailing, 10)
-                    Spacer()
-                }
-                .transition(.opacity)
+                SearchFieldView(term: $searchTerm)
+                    .padding(.leading, 98)
+                    .padding(.trailing, 10)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .transition(.opacity)
             }
             // v115 (her spec): the Shazam button lives at the top
             // of the left rail - the uppermost-left of the screen -
@@ -122,12 +133,12 @@ struct RootView: View {
             ToastOverlay(text: player.toast)
         }
         .animation(.easeInOut(duration: 0.28), value: nav.detail)
-        // v116: the keyboard shield goes on the OUTERMOST view, and
-        // only while the search page is up. v115 put it inside
-        // SearchView, but an ancestor still shrank for the keyboard
-        // and the field rode up anyway (her report). Other pages
-        // (AI chat) keep the normal keyboard behaviour.
-        .ignoresSafeArea(.keyboard, edges: page == .search ? .bottom : [])
+        // v119: the old conditional .ignoresSafeArea(.keyboard)
+        // shield is gone - KeyboardRegionFixer (in the ZStack
+        // above) now excludes the keyboard at the hosting-
+        // controller level while the search page is up, and
+        // restores normal keyboard behaviour on every other page
+        // (the AI chat input still needs to ride the keyboard).
         .onChange(of: scenePhase) { _, phase in
             // v115: the app returning to the foreground is a
             // recovery trigger alongside the engine page's own
@@ -230,6 +241,66 @@ struct RootView: View {
         case .favorites: FavoritesView()
         case .settings: SettingsView()
         case .ai: AIChatView()
+        }
+    }
+}
+
+// v119: excludes the keyboard safe area at the ROOT hosting
+// controller while `active` (the search page), and restores the
+// default regions otherwise. Three rounds of SwiftUI-level
+// keyboard shields failed because the keyboard kept participating
+// in the root layout and re-laying-out individual branches (the
+// search overlay received widened / clipped / bottom-docked rects
+// in her recordings; the mini player floated up too). Setting
+// safeAreaRegions = .container on the hosting controller removes
+// the keyboard from SwiftUI layout entirely for as long as it is
+// set - the container regions (notch, status bar, home indicator)
+// are untouched. The regions are applied to the window's root
+// view controller and its children (whichever of them is the
+// hosting controller), and only logged when they actually change.
+struct KeyboardRegionFixer: UIViewRepresentable {
+    var active: Bool
+    var onApply: (String) -> Void
+
+    func makeUIView(context: Context) -> FixerView {
+        let v = FixerView()
+        v.isUserInteractionEnabled = false
+        v.backgroundColor = .clear
+        return v
+    }
+
+    func updateUIView(_ uiView: FixerView, context: Context) {
+        uiView.active = active
+        uiView.onApply = onApply
+        uiView.applyRegions()
+    }
+
+    final class FixerView: UIView {
+        var active = false
+        var onApply: ((String) -> Void)?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            applyRegions()
+        }
+
+        func applyRegions() {
+            guard let root = window?.rootViewController else { return }
+            let target: UIViewController.SafeAreaRegions = active ? .container : .all
+            var changed = false
+            func walk(_ vc: UIViewController) {
+                if vc.safeAreaRegions != target {
+                    vc.safeAreaRegions = target
+                    changed = true
+                }
+                vc.children.forEach(walk)
+            }
+            walk(root)
+            if changed {
+                onApply?(active
+                    ? "root keyboard safe area OFF (search page)"
+                    : "root keyboard safe area ON")
+            }
         }
     }
 }
