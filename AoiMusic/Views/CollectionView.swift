@@ -154,6 +154,14 @@ struct CollectionView: View {
         }
     }
 
+    // v115 (GPT review item 11): every album favorite DISPLAY goes
+    // through the identity-aware check, so the button can never
+    // read "add" while the tap removes (or the reverse).
+    private var albumFaved: Bool {
+        if let it = item { return player.isFavAlbumItem(it) }
+        return player.isFavAlbum(id)
+    }
+
     @ViewBuilder
     private var heroSection: some View {
         VStack(spacing: 0) {
@@ -194,7 +202,7 @@ struct CollectionView: View {
                     }
                 }
                 if kind == "album" {
-                    actionButton(title: player.isFavAlbum(id) ? settings.t("album_faved") : settings.t("fav_album"), filled: false) {
+                    actionButton(title: albumFaved ? settings.t("album_faved") : settings.t("fav_album"), filled: false) {
                         toggleAlbumFav()
                     }
                 }
@@ -243,36 +251,32 @@ struct CollectionView: View {
             // palette.bottom OVER the image while the page gradient
             // below was only mid-blend at that height: a guaranteed
             // step at the boundary.)
+            // v115 melt (her spec): the cover's body stays SHARP;
+            // only a narrow band at the top edge and the bottom
+            // edge blurs and fades into the page background. The
+            // sharp layer carries the alpha fade; the blurred copy
+            // shows through ONLY inside those two bands.
             Group {
                 if let m = motionURLStr, let u = URL(string: m) {
                     LoopingVideo(url: u)
                         .frame(width: w, height: w)
+                        .mask(heroEdgeMask)
                 } else {
-                    ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
-                    ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
-                        .blur(radius: 28)
+                    ZStack {
+                        ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
+                            .mask(heroEdgeMask)
+                        ArtworkImage(urlString: item?.art(800, 800), size: w, corner: 0)
+                            .blur(radius: 24)
+                            .mask(heroEdgeBlurMask)
+                    }
                 }
             }
-            .mask(
-                LinearGradient(stops: [
-                    .init(color: .black, location: 0.0),
-                    .init(color: .black, location: 0.38),
-                    .init(color: .black.opacity(0.72), location: 0.58),
-                    .init(color: .black.opacity(0.38), location: 0.72),
-                    .init(color: .black.opacity(0.12), location: 0.83),
-                    .init(color: .clear, location: 0.92),
-                    .init(color: .clear, location: 1.0),
-                ], startPoint: .top, endPoint: .bottom)
-            )
-            // Top scrim only (status-bar legibility), plus a whisper of
-            // the cover's bottom colour that never reaches opacity -
-            // it can tint the dissolve, never draw an edge.
+            // Top scrim only (status-bar legibility).
             LinearGradient(
                 stops: [
                     .init(color: (palette?.top ?? Color(red: 0.93, green: 0.96, blue: 0.99)).opacity(0.85), location: 0.0),
                     .init(color: .clear, location: 0.16),
-                    .init(color: .clear, location: 0.55),
-                    .init(color: (palette?.bottom ?? Color(red: 0.98, green: 0.92, blue: 0.95)).opacity(0.18), location: 1.0),
+                    .init(color: .clear, location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom)
         }
@@ -348,7 +352,7 @@ struct CollectionView: View {
             motionURLStr = await api.motionURL(kind: kind == "album" ? "albums" : "playlists", id: id)
         }
         if kind == "album" { await resolveArtist() }
-        if kind == "album", engine.authorized, let it = item, !player.isFavAlbum(id) {
+        if kind == "album", engine.authorized, let it = item, !player.isFavAlbumItem(it) {
             // Hydrate from Apple's ratings once; a hit joins the local list.
             if await api.rating(kind: "albums", id: id) { player.absorbFavAlbums([it]) }
         }
