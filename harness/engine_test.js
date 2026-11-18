@@ -169,8 +169,12 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
   // ---- relay rules (v109.10: switchable, default DIRECT) ----
   rawFetchCalls.length = 0;
   await sandbox.fetch('https://api.music.apple.com/v1/catalog/cn/songs/123');
-  check('v109.10 default: api fetch goes DIRECT (no relay)', lastRaw() === 'https://api.music.apple.com/v1/catalog/cn/songs/123');
-  check('relay layer logged as direct', logHas(/mode=direct/));
+  check('v109.20 default: api fetch goes via RELAY', lastRaw() === RELAY + '?target=' + encodeURIComponent('https://api.music.apple.com/v1/catalog/cn/songs/123'));
+  check('relay layer logged as relay', logHas(/mode=relay/));
+  sandbox.AoiEngine.setRelay(false);
+  rawFetchCalls.length = 0;
+  await sandbox.fetch('https://api.music.apple.com/v1/catalog/cn/songs/123');
+  check('relay off: api fetch goes DIRECT (no relay)', lastRaw() === 'https://api.music.apple.com/v1/catalog/cn/songs/123');
   sandbox.AoiEngine.setRelay(true);
   rawFetchCalls.length = 0;
   await sandbox.fetch('https://api.music.apple.com/v1/catalog/cn/songs/123');
