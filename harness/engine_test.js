@@ -16,7 +16,7 @@ const vm = require('vm');
 const html = fs.readFileSync(__dirname + '/../AoiMusic/engine.html', 'utf8');
 const scripts = [];
 for (const m of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) scripts.push(m[1]);
-if (scripts.length !== 3) { console.error('FAIL: expected 3 inline scripts, got ' + scripts.length); process.exit(1); }
+if (scripts.length !== 4) { console.error('FAIL: expected 4 inline scripts, got ' + scripts.length); process.exit(1); }
 
 for (let i = 0; i < scripts.length; i++) {
   try { new Function(scripts[i]); }
@@ -107,6 +107,7 @@ const music = {
   seekToTime() {},
   reset() {
     this.queue.items = []; this.queue.position = -1; this.nowPlayingItem = null;
+    this.currentPlaybackTime = 0; this.currentPlaybackDuration = 0;
     this.unresolvable = new Set(); this.jumpAbortTimes = 0; this.jumpLie = false;
     this.jumpHang = false; this.playHang = false; this.jumpCalls = 0;
     this.playCalls = 0; this.setQueueCalls = []; this.isPlaying = false;
@@ -115,10 +116,16 @@ const music = {
   },
 };
 
+// v109.19: the engine's completion gate, heal and play-verify all
+// live on the 500ms interval, so the harness now REGISTERS
+// interval callbacks and pumps them on a fast real timer, with a
+// simulated playback clock (time advances and a full-length
+// duration appears while the fake is playing).
+const intervalCbs = new Set();
 const sandbox = {
   console, URL, Promise, JSON, Math, Date, Object, Array, String, Number, Boolean, RegExp, Error,
   encodeURIComponent, decodeURIComponent,
-  setInterval: () => 0, clearInterval: () => {}, setTimeout: setTimeout, clearTimeout: clearTimeout,
+  setInterval: (fn) => { intervalCbs.add(fn); return intervalCbs.size; }, clearInterval: () => {}, setTimeout: setTimeout, clearTimeout: clearTimeout,
   location: { href: 'https://music.apple.com/', origin: 'https://music.apple.com' },
   localStorage: { _m: {}, getItem(k) { return k in this._m ? this._m[k] : null; }, setItem(k, v) { this._m[k] = String(v); } },
   performance: { now: () => Date.now() },
@@ -150,6 +157,15 @@ const errPosts = () => posts.filter(p => p.type === 'error');
 const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''));
 
 (async () => {
+  // Pump the engine's intervals + a simulated playback clock.
+  const pump = setInterval(() => {
+    if (music.isPlaying && music.nowPlayingItem) {
+      music.currentPlaybackTime += 0.25;
+      if (!music.currentPlaybackDuration) music.currentPlaybackDuration = 200;
+    }
+    for (const fn of [...intervalCbs]) { try { fn(); } catch (e) {} }
+  }, 10);
+
   // ---- relay rules (v109.10: switchable, default DIRECT) ----
   rawFetchCalls.length = 0;
   await sandbox.fetch('https://api.music.apple.com/v1/catalog/cn/songs/123');
