@@ -177,6 +177,10 @@ final class Player: ObservableObject {
                 self.showToast(Strings.get("play_fail", self.lang))
             }
         }
+        // v117 (GPT round 4): the engine is the single owner of
+        // preview recovery - these are its verdicts, not requests.
+        engine.onPreviewHealed = { [weak self] id in self?.handlePreviewHealed(id) }
+        engine.onPreviewExhausted = { [weak self] id in self?.handlePreviewExhausted(id) }
     }
 
     // MARK: - v114 preview-substitution detection + recovery
@@ -203,69 +207,67 @@ final class Player: ObservableObject {
             }
             return
         }
-        // Stage 2 (v116): a forced reload already ran for this
-        // track and the asset is STILL a preview after it had time
-        // to land - the id itself is likely a foreign-storefront
-        // twin, so resolve it in the account storefront and swap.
-        if let triedAt = previewForceTriedAt[cur.playbackId],
-           Date().timeIntervalSince(triedAt) > 8,
-           !previewStorefrontTried.contains(cur.playbackId),
-           t >= 2, d > 10, d < 45,
-           let expS = cur.attributes?.durationInMillis, expS > 90_000,
-           d < Double(expS) / 1000 * 0.6 {
-            previewStorefrontTried.insert(cur.playbackId)
-            let keyS = cur.playbackId
-            let genS = queueGeneration
-            Task { [weak self] in
-                guard let self = self else { return }
-                let fixed = await self.api.resolveInStorefront(cur)
-                guard self.queueGeneration == genS, self.current?.playbackId == keyS else { return }
-                guard let fixed = fixed, fixed.id != cur.playbackId, fixed.id != cur.id else {
-                    self.showToast(Strings.get("preview_only", self.lang))
-                    return
-                }
-                var list = self.queue
-                for i in list.indices where list[i].playbackId == keyS || list[i].id == cur.id {
-                    list[i] = fixed
-                }
-                self.previewTried.insert(fixed.id)
-                self.previewRecoveryTargetID = fixed.playbackId
-                self.pendingRegionToast = true
-                self.playSongs(list, start: self.index, preservePreviewState: true)
-            }
-            return
-        }
         guard t >= 2, d > 10, d < 45,
               let exp = cur.attributes?.durationInMillis, exp > 90_000,
               d < Double(exp) / 1000 * 0.6 else { return }
         if !isPreviewClip { isPreviewClip = true }
+        previewRecoveryTargetID = cur.playbackId
         let key = cur.playbackId
         guard !previewTried.contains(key) else { return }
         previewTried.insert(key)
-        let gen = queueGeneration
+        // v117 (GPT round 4): OBSERVE ONLY. The engine's own heal
+        // tick sees the same asset and owns the cure; Swift ordering
+        // its own rebuild on top is what produced the 2026-11-18
+        // 09:50 three-rebuild pile-up. The one Swift-side duty left
+        // here is genuine authorization loss (the engine cannot heal
+        // while unauthorized), and only when the bridge KNOWS the
+        // state - an unknown state means the engine is recovering,
+        // not that the account is gone.
+        engine.logEvent("preview detected for \(key) - engine owns recovery")
+        if engine.authStateKnown, !engine.authorized {
+            runAuthRecovery(reason: "preview-clip")
+        }
+    }
+
+    // v117: the engine reports the song healed - clear the badge
+    // and the bookkeeping for exactly that song.
+    private func handlePreviewHealed(_ id: String) {
+        guard !id.isEmpty else { return }
+        previewForceTriedAt[id] = Date()
+        if isPreviewClip, current?.playbackId == id {
+            isPreviewClip = false
+            previewRecoveryTargetID = nil
+            engine.logEvent("preview healed confirmed by engine for \(id)")
+        } else {
+            engine.logEvent("preview healed (engine) for \(id)")
+        }
+    }
+
+    // v117: the engine gave up on the same-id heal - NOW the
+    // storefront twin swap (v116's stage 2) may run, once per song.
+    // This is the ONLY trigger for cross-storefront resolution.
+    private func handlePreviewExhausted(_ id: String) {
+        guard let cur = current, cur.playbackId == id, isPreviewClip else { return }
+        guard !previewStorefrontTried.contains(id) else { return }
+        previewStorefrontTried.insert(id)
+        let keyS = id
+        let genS = queueGeneration
         Task { [weak self] in
             guard let self = self else { return }
-            // v115 (GPT patches 14-17): authorization FIRST. While
-            // the engine is unauthorized, EVERY song previews and a
-            // per-song storefront search is wasted work crowned by
-            // a lying "switched" toast - the v114 trial proved it.
-            let status = await self.api.probeLibraryStatus()
-            guard self.queueGeneration == gen, self.current?.playbackId == key else { return }
-            if status == 401 || !self.engine.authorized {
-                self.runAuthRecovery(reason: "preview-clip")
+            let fixed = await self.api.resolveInStorefront(cur)
+            guard self.queueGeneration == genS, self.current?.playbackId == keyS else { return }
+            guard let fixed = fixed, fixed.id != cur.playbackId, fixed.id != cur.id else {
+                self.showToast(Strings.get("preview_only", self.lang))
                 return
             }
-            // v116: authorized (or the probe answer unclear) - the
-            // cure is a forced queue rebuild that re-acquires the
-            // license. replayCurrentQueueForRecovery now calls the
-            // engine's forceReload, which playQueue's same-list
-            // shortcut cannot short-circuit (in v115 this path
-            // resolved the storefront FIRST and the plain re-queue
-            // path was a no-op). If the asset is still a preview
-            // afterwards, stage 2 (storefront twin swap) runs from
-            // the progress path above.
-            _ = gen
-            self.replayCurrentQueueForRecovery()
+            var list = self.queue
+            for i in list.indices where list[i].playbackId == keyS || list[i].id == cur.id {
+                list[i] = fixed
+            }
+            self.previewTried.insert(fixed.id)
+            self.previewRecoveryTargetID = fixed.playbackId
+            self.pendingRegionToast = true
+            self.playSongs(list, start: self.index, preservePreviewState: true)
         }
     }
 
@@ -279,31 +281,19 @@ final class Player: ObservableObject {
     // position are never sacrificed, and nothing retries forever.
     func foregroundBecameVisible() {
         guard useEngine, current != nil else { return }
-        let recentError = lastEngineErrorAt.map { Date().timeIntervalSince($0) < 180 } ?? false
-        guard isPreviewClip || (recentError && !isPlaying) else { return }
-        guard Date().timeIntervalSince(lastForegroundRecovery) > 20 else { return }
-        lastForegroundRecovery = Date()
-        engine.logEvent("foreground recovery check (badge=\(isPreviewClip) recentError=\(recentError))")
-        let key = current?.playbackId ?? ""
-        let gen = queueGeneration
-        Task { [weak self] in
-            guard let self = self else { return }
-            let status = await self.api.probeLibraryStatus()
-            guard self.queueGeneration == gen, self.current?.playbackId == key else { return }
-            if status == 401 || !self.engine.authorized {
-                self.runAuthRecovery(reason: "foreground")
-            } else {
-                self.replayCurrentQueueForRecovery()
-            }
+        // v117 (GPT round 4): foreground return no longer orders
+        // queue rebuilds from the Swift side - the engine re-checks
+        // its own state on visibility (and the bridge's ensureAlive
+        // runs before this). Swift's only foreground duty is genuine
+        // authorization loss, and only on a KNOWN state.
+        if engine.authStateKnown, !engine.authorized {
+            guard Date().timeIntervalSince(lastForegroundRecovery) > 20 else { return }
+            lastForegroundRecovery = Date()
+            engine.logEvent("foreground: engine reports unauthorized - auth recovery")
+            runAuthRecovery(reason: "foreground")
+        } else if isPreviewClip {
+            engine.logEvent("foreground: preview badge on - engine owns recovery, no Swift rebuild")
         }
-    }
-
-    private func replayCurrentQueueForRecovery() {
-        guard let cur = current, !queue.isEmpty, queue.indices.contains(index) else { return }
-        previewRecoveryTargetID = cur.playbackId
-        previewForceTriedAt[cur.playbackId] = Date()
-        engine.logEvent("recovery: force-reloading the queue in the foreground to re-acquire the license")
-        engine.forceReloadQueue()
     }
 
     private func runAuthRecovery(reason: String) {
@@ -319,13 +309,30 @@ final class Player: ObservableObject {
             }
             self.authRecoveryBusy = false
             if self.engine.authorized {
-                self.engine.logEvent("auth recovery: authorized again, replaying queue")
-                self.replayCurrentQueueForRecovery()
-            } else {
+                // v117: no Swift-ordered replay - the engine's own
+                // recoverAuth re-acquires the current track's
+                // license inside its serial chain.
+                self.engine.logEvent("auth recovery: authorized again - engine re-acquires the license itself")
+            } else if self.engine.authStateKnown {
                 self.engine.logEvent("auth recovery: still unauthorized")
                 self.showToast(Strings.get("need_acct", self.lang))
+            } else {
+                self.engine.logEvent("auth recovery: engine state unknown - staying quiet")
             }
         }
+    }
+
+    // v117 (GPT round 4, problem 3): the ONE place that puts the
+    // shared audio session back into the Player's playback
+    // configuration. Shazam's teardown calls this after
+    // deactivating its recording session - v116 deactivated and
+    // left the session in the recording category, which kept the
+    // webview's output paused even after a force play().
+    func restorePlaybackAudioSession() {
+        let s = AVAudioSession.sharedInstance()
+        try? s.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try? s.setActive(true)
+        engine.logEvent("audio session restored to playback")
     }
 
     // MARK: - preview (AVPlayer) wiring
@@ -483,8 +490,12 @@ final class Player: ObservableObject {
     // v116 (Shazam): quietly resume playback that an audio-session
     // activation interrupted, without toggling a state the user
     // chose themselves.
-    func resumeAfterInterruption() {
-        guard current != nil, !isPlaying else { return }
+    func resumeAfterInterruption(force: Bool = false) {
+        // v117: `force` exists for the Shazam interruption, where
+        // the system pauses the webview's media while MusicKit
+        // keeps reporting isPlaying=true - the flag cannot be
+        // trusted there, and a play() on a playing item is a no-op.
+        guard current != nil, force || !isPlaying else { return }
         if useEngine { engine.play(); isPlaying = true }
         else { av.play(); isPlaying = true }
     }
@@ -849,7 +860,7 @@ final class Player: ObservableObject {
     private var lastArtworkImage: UIImage?
     // v115: the iOS 26 animated artwork object, boxed as AnyObject
     // so the property itself needs no availability annotation.
-    private var animatedArtworkBox: (songId: String, artwork: AnyObject)?
+    private var animatedArtworkBox: (songId: String, artworks: [String: AnyObject])?
     private func setupRemote() {
         let cc = MPRemoteCommandCenter.shared()
         cc.playCommand.addTarget { [weak self] _ in self?.playOnly(); return .success }
@@ -908,9 +919,10 @@ final class Player: ObservableObject {
         if artKey == lastArtworkKey, let img = lastArtworkImage {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
         }
-        if #available(iOS 26.0, *), let box = animatedArtworkBox, box.songId == cur.playbackId,
-           let aa = box.artwork as? MPMediaItemAnimatedArtwork {
-            info[MPNowPlayingInfoProperty1x1AnimatedArtwork] = aa
+        if #available(iOS 26.0, *), let box = animatedArtworkBox, box.songId == cur.playbackId {
+            for (k, v) in box.artworks {
+                if let aa = v as? MPMediaItemAnimatedArtwork { info[k] = aa }
+            }
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         WidgetShared.publish(title: cur.title, artist: cur.artist, isPlaying: isPlaying)
@@ -936,71 +948,150 @@ final class Player: ObservableObject {
     // failed, or the system never asked. A direct .mp4 is now
     // downloaded as-is (the reliable path); an HLS stream goes
     // through the passthrough export, best effort.
-    private func prepareMotionFile(song: Song) async -> URL? {
-        let songId = song.playbackId
-        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("motion", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let dst = dir.appendingPathComponent(songId + ".mp4")
-        if FileManager.default.fileExists(atPath: dst.path) { return dst }
-        if motionMissed.contains(songId) { return nil }
-        guard let murl = await api.motionURLForSong(song), let src = URL(string: murl) else {
-            motionMissed.insert(songId)
-            engine.logEvent("animated artwork: this album has no motion cover (\(songId)")
+    private var motionTasks: [String: Task<URL?, Never>] = [:]
+
+    // v117 (GPT round 4): per-aspect files with in-flight dedupe.
+    // v116's prefetch and the system's own request handler could
+    // download/export the SAME destination concurrently; now both
+    // await one shared task per song+aspect, and exports land via
+    // a temp file that moves into place atomically.
+    private func prepareMotionFile(song: Song, urlString: String, aspect: String) async -> URL? {
+        let key = song.playbackId + "-" + aspect
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            engine.logEvent("animated artwork: no caches directory")
             return nil
         }
-        if src.pathExtension.lowercased() == "mp4" {
+        let dir = caches.appendingPathComponent("motion", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dst = dir.appendingPathComponent(key + ".mp4")
+        if FileManager.default.fileExists(atPath: dst.path) { return dst }
+        if motionMissed.contains(key) { return nil }
+        if let t = motionTasks[key] { return await t.value }
+        let task = Task<URL?, Never> { [weak self] in
+            guard let self = self else { return nil }
+            return await self.fetchMotionFile(src: urlString, dst: dst, key: key)
+        }
+        motionTasks[key] = task
+        let r = await task.value
+        motionTasks[key] = nil
+        return r
+    }
+
+    private func fetchMotionFile(src: String, dst: URL, key: String) async -> URL? {
+        guard let srcURL = URL(string: src) else {
+            motionMissed.insert(key)
+            return nil
+        }
+        if srcURL.pathExtension.lowercased() == "mp4" {
             do {
-                let (tmp, _) = try await URLSession.shared.download(from: src)
+                let (tmp, _) = try await URLSession.shared.download(from: srcURL)
                 try? FileManager.default.removeItem(at: dst)
                 try FileManager.default.moveItem(at: tmp, to: dst)
-                engine.logEvent("animated artwork: mp4 downloaded for \(songId)")
+                engine.logEvent("animated artwork: mp4 downloaded for \(key)")
                 return dst
             } catch {
-                engine.logEvent("animated artwork: mp4 download failed for \(songId)")
+                engine.logEvent("animated artwork: mp4 download failed for \(key)")
                 return nil
             }
         }
-        let asset = AVURLAsset(url: src)
+        let asset = AVURLAsset(url: srcURL)
         guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
-            engine.logEvent("animated artwork: no export session for \(songId)")
+            engine.logEvent("animated artwork: no export session for \(key)")
             return nil
         }
-        export.outputURL = dst
+        let tmpOut = dst.deletingPathExtension().appendingPathExtension("tmp-" + String(UUID().uuidString.prefix(8)) + ".mp4")
+        export.outputURL = tmpOut
         export.outputFileType = .mp4
         await export.export()
         if export.status == .completed {
-            engine.logEvent("animated artwork: HLS exported to mp4 for \(songId)")
+            try? FileManager.default.removeItem(at: dst)
+            try? FileManager.default.moveItem(at: tmpOut, to: dst)
+            engine.logEvent("animated artwork: HLS exported to mp4 for \(key)")
             return dst
         }
-        engine.logEvent("animated artwork: HLS export failed for \(songId) (status \(export.status.rawValue))")
+        try? FileManager.default.removeItem(at: tmpOut)
+        engine.logEvent("animated artwork: HLS export failed for \(key) (status \(export.status.rawValue))")
         return nil
     }
 
+    // v117: per-song retry bookkeeping for the animated key. The
+    // first attach attempt can run BEFORE the system registers
+    // this app as the now-playing app, and in that window
+    // supportedAnimatedArtworkKeys may not offer the key yet
+    // (device log 2026-11-18 09:40: not offered at first attach).
+    private var animatedKeyRetries: [String: Int] = [:]
+
+    private var animatedKeysLoggedFor: String? = nil
+
     private func attachAnimatedArtwork(song: Song, preview: UIImage) {
         if #available(iOS 26.0, *) {
-            guard MPNowPlayingInfoCenter.supportedAnimatedArtworkKeys
-                .contains(MPNowPlayingInfoProperty1x1AnimatedArtwork) else {
-                engine.logEvent("animated artwork: the system does not offer the 1x1 animated key")
+            let keys = MPNowPlayingInfoCenter.supportedAnimatedArtworkKeys
+            let songId = song.playbackId
+            // v117 (GPT round 4): log what the system ACTUALLY
+            // offers - two rounds of guessing (timing, low power)
+            // went nowhere while the log only ever said "no 1x1".
+            if animatedKeysLoggedFor != songId {
+                animatedKeysLoggedFor = songId
+                engine.logEvent("animated artwork: system offers keys [\(keys.joined(separator: ", "))]")
+            }
+            let hasSq = keys.contains(MPNowPlayingInfoProperty1x1AnimatedArtwork)
+            let hasTall = keys.contains(MPNowPlayingInfoProperty3x4AnimatedArtwork)
+            if !hasSq && !hasTall {
+                let n = animatedKeyRetries[songId, default: 0]
+                if n == 0 {
+                    engine.logEvent("animated artwork: the system offers no animated key (will retry)")
+                }
+                if n < 3 {
+                    animatedKeyRetries[songId] = n + 1
+                    Task { [weak self] in
+                        try? await Task.sleep(nanoseconds: 5_000_000_000)
+                        guard let self = self, self.current?.playbackId == songId else { return }
+                        self.attachAnimatedArtwork(song: song, preview: preview)
+                    }
+                }
                 return
             }
-            let songId = song.playbackId
-            let animated = MPMediaItemAnimatedArtwork(
-                artworkID: "aoi-" + songId,
-                previewImageRequestHandler: { _ in preview },
-                videoAssetFileURLRequestHandler: { _ in
-                    await self.prepareMotionFile(song: song)
-                })
-            animatedArtworkBox = (songId, animated)
-            // v116: prefetch the video file NOW, while the app is
-            // in the foreground - the system's handler may ask
-            // while the phone is locked and the network is asleep.
-            Task { [weak self] in _ = await self?.prepareMotionFile(song: song) }
-            guard current?.playbackId == songId else { return }
-            var i3 = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            i3[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: preview.size) { _ in preview }
-            i3[MPNowPlayingInfoProperty1x1AnimatedArtwork] = animated
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = i3
+            if let n = animatedKeyRetries[songId], n > 0 {
+                engine.logEvent("animated artwork: key offered on retry \(n) for \(songId)")
+                animatedKeyRetries[songId] = nil
+            }
+            Task { [weak self] in
+                guard let self = self else { return }
+                let urls = await self.api.motionURLsForSong(song)
+                var jobs: [(String, String)] = []
+                if hasSq, let u = urls.square { jobs.append(("sq", u)) }
+                if hasTall, let u = urls.tall { jobs.append(("tall", u)) }
+                if jobs.isEmpty {
+                    if !self.motionMissed.contains(songId + "-sq") {
+                        self.motionMissed.insert(songId + "-sq")
+                        self.engine.logEvent("animated artwork: this album has no motion cover (\(songId))")
+                    }
+                    return
+                }
+                var artworks: [String: AnyObject] = [:]
+                for (aspect, u) in jobs {
+                    let propKey = aspect == "sq" ? MPNowPlayingInfoProperty1x1AnimatedArtwork : MPNowPlayingInfoProperty3x4AnimatedArtwork
+                    let animated = MPMediaItemAnimatedArtwork(
+                        artworkID: "aoi-" + songId + "-" + aspect,
+                        previewImageRequestHandler: { _ in preview },
+                        videoAssetFileURLRequestHandler: { _ in
+                            await self.prepareMotionFile(song: song, urlString: u, aspect: aspect)
+                        })
+                    artworks[propKey] = animated
+                }
+                self.animatedArtworkBox = (songId, artworks)
+                // Prefetch in the foreground (v116) so the file is
+                // ready before the system asks on the lock screen.
+                for (aspect, u) in jobs {
+                    _ = await self.prepareMotionFile(song: song, urlString: u, aspect: aspect)
+                }
+                guard self.current?.playbackId == songId else { return }
+                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: preview.size) { _ in preview }
+                for (k, v) in artworks { info[k] = v }
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+                self.engine.logEvent("animated artwork: attached for \(songId) (\(artworks.count) key(s))")
+            }
         }
     }
 }
