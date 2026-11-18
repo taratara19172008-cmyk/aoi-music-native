@@ -924,31 +924,78 @@ final class Player: ObservableObject {
     // export to a cached .mp4) and returns the file. The preview
     // image is the static cover, available synchronously. Any
     // failure along the way simply leaves the static artwork.
+    // v116: albums with no motion artwork are a legitimate nil -
+    // remembered per song so the system's handler cannot refetch
+    // (and re-log) the same miss forever.
+    private var motionMissed = Set<String>()
+
+    // Prepare the local mp4 for the lock-screen animated artwork,
+    // with every step in the log. v115 did this silently, so when
+    // the lock screen stayed static neither side could tell
+    // whether the album had no motion cover, the HLS export had
+    // failed, or the system never asked. A direct .mp4 is now
+    // downloaded as-is (the reliable path); an HLS stream goes
+    // through the passthrough export, best effort.
+    private func prepareMotionFile(song: Song) async -> URL? {
+        let songId = song.playbackId
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("motion", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dst = dir.appendingPathComponent(songId + ".mp4")
+        if FileManager.default.fileExists(atPath: dst.path) { return dst }
+        if motionMissed.contains(songId) { return nil }
+        guard let murl = await api.motionURLForSong(song), let src = URL(string: murl) else {
+            motionMissed.insert(songId)
+            engine.logEvent("animated artwork: this album has no motion cover (\(songId)")
+            return nil
+        }
+        if src.pathExtension.lowercased() == "mp4" {
+            do {
+                let (tmp, _) = try await URLSession.shared.download(from: src)
+                try? FileManager.default.removeItem(at: dst)
+                try FileManager.default.moveItem(at: tmp, to: dst)
+                engine.logEvent("animated artwork: mp4 downloaded for \(songId)")
+                return dst
+            } catch {
+                engine.logEvent("animated artwork: mp4 download failed for \(songId)")
+                return nil
+            }
+        }
+        let asset = AVURLAsset(url: src)
+        guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            engine.logEvent("animated artwork: no export session for \(songId)")
+            return nil
+        }
+        export.outputURL = dst
+        export.outputFileType = .mp4
+        await export.export()
+        if export.status == .completed {
+            engine.logEvent("animated artwork: HLS exported to mp4 for \(songId)")
+            return dst
+        }
+        engine.logEvent("animated artwork: HLS export failed for \(songId) (status \(export.status.rawValue))")
+        return nil
+    }
+
     private func attachAnimatedArtwork(song: Song, preview: UIImage) {
         if #available(iOS 26.0, *) {
             guard MPNowPlayingInfoCenter.supportedAnimatedArtworkKeys
-                .contains(MPNowPlayingInfoProperty1x1AnimatedArtwork) else { return }
+                .contains(MPNowPlayingInfoProperty1x1AnimatedArtwork) else {
+                engine.logEvent("animated artwork: the system does not offer the 1x1 animated key")
+                return
+            }
             let songId = song.playbackId
-            let api = self.api
             let animated = MPMediaItemAnimatedArtwork(
                 artworkID: "aoi-" + songId,
                 previewImageRequestHandler: { _ in preview },
                 videoAssetFileURLRequestHandler: { _ in
-                    guard let murl = await api.motionURLForSong(song),
-                          let src = URL(string: murl) else { return nil }
-                    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-                        .appendingPathComponent("motion", isDirectory: true)
-                    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                    let dst = dir.appendingPathComponent(songId + ".mp4")
-                    if FileManager.default.fileExists(atPath: dst.path) { return dst }
-                    let asset = AVURLAsset(url: src)
-                    guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else { return nil }
-                    export.outputURL = dst
-                    export.outputFileType = .mp4
-                    await export.export()
-                    return export.status == .completed ? dst : nil
+                    await self.prepareMotionFile(song: song)
                 })
             animatedArtworkBox = (songId, animated)
+            // v116: prefetch the video file NOW, while the app is
+            // in the foreground - the system's handler may ask
+            // while the phone is locked and the network is asleep.
+            Task { [weak self] in _ = await self?.prepareMotionFile(song: song) }
             guard current?.playbackId == songId else { return }
             var i3 = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             i3[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: preview.size) { _ in preview }
