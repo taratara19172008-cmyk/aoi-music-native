@@ -24,6 +24,15 @@ final class Player: ObservableObject {
     // Now Playing badge reads this instead of assuming engine = full.
     @Published var isPreviewClip = false
     private var previewTried = Set<String>()
+    // v115 preview/auth recovery state (GPT rounds 2-3): the badge
+    // is a small state machine now - set by detection, cleared ONLY
+    // by a confirmed full-length asset or an unrelated track.
+    private var previewRecoveryTargetID: String?
+    private var pendingRegionToast = false
+    private var queueGeneration = 0
+    private var authRecoveryBusy = false
+    private var lastForegroundRecovery = Date.distantPast
+    private var lastEngineErrorAt: Date?
     @Published var shuffle = false
     @Published var repeatMode = 0 // app: 0 off, 1 all, 2 one
     @Published var useEngine = false
@@ -65,6 +74,20 @@ final class Player: ObservableObject {
         setupPreview()
         setupRemote()
         setupWidgetCommands()
+        // v115: widget transport intents (AudioPlaybackIntent) run
+        // in THIS process and reach the player through this handler
+        // (see PlaybackIntents.swift, shared with the widget target).
+        PlaybackCommandCenter.appHandler = { [weak self] cmd in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch cmd {
+                case "toggle": self.togglePlay()
+                case "next": self.next()
+                case "prev": self.prev()
+                default: break
+                }
+            }
+        }
     }
 
     // MARK: - persistence helpers
@@ -95,6 +118,7 @@ final class Player: ObservableObject {
     // One engine now: state, progress, items and transport all come
     // from the same place, exactly like v109.
     private func setupEngine() {
+        engine.onForeground = { [weak self] in self?.foregroundBecameVisible() }
         engine.onState = { [weak self] playing in
             guard let self = self, self.useEngine else { return }
             if playing != self.isPlaying { self.isPlaying = playing }
@@ -122,10 +146,23 @@ final class Player: ObservableObject {
                 s.attributes = SongAttrs(name: item.title, artistName: item.artist, albumName: item.album, artwork: Artwork(url: item.artwork), previews: nil, durationInMillis: item.duration.map { Int($0 * 1000) })
                 self.current = s
             }
-            if let c = self.current { self.recordHistory(c) }
+            if let c = self.current {
+                // v115 (GPT round 2d): an UNRELATED track taking over
+                // ends the preview episode. The recovery target
+                // itself - the same recording under a new id after
+                // a storefront swap - must not clear the badge here;
+                // only onProgress confirming a full-length asset may.
+                if self.isPreviewClip, let tgt = self.previewRecoveryTargetID, c.playbackId != tgt {
+                    self.isPreviewClip = false
+                    self.previewRecoveryTargetID = nil
+                    self.pendingRegionToast = false
+                }
+                self.recordHistory(c)
+            }
             self.updateNowPlayingInfo()
         }
         engine.onError = { [weak self] kind in
+            if kind == "playQueue" || kind == "station" { self?.lastEngineErrorAt = Date() }
             // Only a failed playback attempt may surface the "playback failed" toast,
             // and only if nothing actually started playing shortly after (the engine
             // reports superseded-operation errors that are not real failures).
@@ -144,19 +181,52 @@ final class Player: ObservableObject {
     // once per song: resolve the same recording in the account's own
     // storefront and replay the queue with it swapped in.
     private func checkPreviewClip(t: Double, d: Double) {
-        guard useEngine, t >= 2, d > 10, d < 45,
-              let cur = current,
+        guard useEngine, let cur = current else { return }
+        // Recovery confirmation: the flagged track now reports a
+        // believable full-length asset - the badge clears HERE, not
+        // when a fix was merely attempted (GPT round 2d).
+        if isPreviewClip, let tgt = previewRecoveryTargetID, cur.playbackId == tgt,
+           let exp = cur.attributes?.durationInMillis, exp > 90_000,
+           d >= 45 || d >= Double(exp) / 1000 * 0.6 {
+            isPreviewClip = false
+            previewRecoveryTargetID = nil
+            engine.logEvent("preview recovery confirmed for \(tgt): asset duration \(Int(d))s")
+            if pendingRegionToast {
+                pendingRegionToast = false
+                showToast(Strings.get("region_switched", lang))
+            }
+            return
+        }
+        guard t >= 2, d > 10, d < 45,
               let exp = cur.attributes?.durationInMillis, exp > 90_000,
               d < Double(exp) / 1000 * 0.6 else { return }
         if !isPreviewClip { isPreviewClip = true }
         let key = cur.playbackId
         guard !previewTried.contains(key) else { return }
         previewTried.insert(key)
+        let gen = queueGeneration
         Task { [weak self] in
             guard let self = self else { return }
+            // v115 (GPT patches 14-17): authorization FIRST. While
+            // the engine is unauthorized, EVERY song previews and a
+            // per-song storefront search is wasted work crowned by
+            // a lying "switched" toast - the v114 trial proved it.
+            let status = await self.api.probeLibraryStatus()
+            guard self.queueGeneration == gen, self.current?.playbackId == key else { return }
+            if status == 401 || !self.engine.authorized {
+                self.runAuthRecovery(reason: "preview-clip")
+                return
+            }
+            guard status == 200 else {
+                // Token fine on paper but the license path failed:
+                // re-queue the current list in the foreground to
+                // re-acquire the license (GPT round 3).
+                self.replayCurrentQueueForRecovery()
+                return
+            }
             let fixed = await self.api.resolveInStorefront(cur)
-            guard let fixed = fixed, fixed.id != cur.playbackId, fixed.id != cur.id,
-                  self.current?.playbackId == key else {
+            guard self.queueGeneration == gen, self.current?.playbackId == key else { return }
+            guard let fixed = fixed, fixed.id != cur.playbackId, fixed.id != cur.id else {
                 self.showToast(Strings.get("preview_only", self.lang))
                 return
             }
@@ -165,9 +235,67 @@ final class Player: ObservableObject {
                 list[i] = fixed
             }
             self.previewTried.insert(fixed.id)
-            let startAt = list.firstIndex(where: { $0.id == fixed.id }) ?? self.index
-            self.playSongs(list, start: startAt)
-            self.showToast(Strings.get("region_switched", self.lang))
+            self.previewRecoveryTargetID = fixed.playbackId
+            self.pendingRegionToast = true
+            self.playSongs(list, start: self.index, preservePreviewState: true)
+        }
+    }
+
+    // MARK: - v115 foreground / auth recovery (GPT rounds 2-3)
+    // The engine page reports every return to visibility; the app
+    // scene phase says the same. Recovery is warranted only when
+    // something is actually wrong (preview badge on, or a recent
+    // playback error with nothing playing), throttled, and always
+    // ordered: probe -> authorize ONLY if truly unauthorized ->
+    // replay the CURRENT queue in the foreground. The queue and
+    // position are never sacrificed, and nothing retries forever.
+    func foregroundBecameVisible() {
+        guard useEngine, current != nil else { return }
+        let recentError = lastEngineErrorAt.map { Date().timeIntervalSince($0) < 180 } ?? false
+        guard isPreviewClip || (recentError && !isPlaying) else { return }
+        guard Date().timeIntervalSince(lastForegroundRecovery) > 20 else { return }
+        lastForegroundRecovery = Date()
+        engine.logEvent("foreground recovery check (badge=\(isPreviewClip) recentError=\(recentError))")
+        let key = current?.playbackId ?? ""
+        let gen = queueGeneration
+        Task { [weak self] in
+            guard let self = self else { return }
+            let status = await self.api.probeLibraryStatus()
+            guard self.queueGeneration == gen, self.current?.playbackId == key else { return }
+            if status == 401 || !self.engine.authorized {
+                self.runAuthRecovery(reason: "foreground")
+            } else {
+                self.replayCurrentQueueForRecovery()
+            }
+        }
+    }
+
+    private func replayCurrentQueueForRecovery() {
+        guard let cur = current, !queue.isEmpty, queue.indices.contains(index) else { return }
+        previewRecoveryTargetID = cur.playbackId
+        engine.logEvent("recovery: re-queueing current list in foreground")
+        playSongs(queue, start: index, preservePreviewState: true)
+    }
+
+    private func runAuthRecovery(reason: String) {
+        guard !authRecoveryBusy else { return }
+        authRecoveryBusy = true
+        engine.logEvent("auth recovery started (\(reason))")
+        engine.recoverAuth()
+        Task { [weak self] in
+            guard let self = self else { return }
+            for _ in 0..<12 {
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                if self.engine.authorized { break }
+            }
+            self.authRecoveryBusy = false
+            if self.engine.authorized {
+                self.engine.logEvent("auth recovery: authorized again, replaying queue")
+                self.replayCurrentQueueForRecovery()
+            } else {
+                self.engine.logEvent("auth recovery: still unauthorized")
+                self.showToast(Strings.get("need_acct", self.lang))
+            }
         }
     }
 
@@ -218,9 +346,17 @@ final class Player: ObservableObject {
     }
 
     // MARK: - transport
-    func playSongs(_ songs: [Song], start: Int) {
+    func playSongs(_ songs: [Song], start: Int, preservePreviewState: Bool = false) {
         guard !songs.isEmpty, songs.indices.contains(start) else { return }
-        isPreviewClip = false
+        queueGeneration += 1
+        // v115 (GPT round 2d): a recovery replay must not clear the
+        // preview badge itself - confirmation or an unrelated track
+        // does that, never the attempt.
+        if !preservePreviewState {
+            isPreviewClip = false
+            previewRecoveryTargetID = nil
+            pendingRegionToast = false
+        }
         var list = songs
         var startAt = start
         if engine.authorized {
@@ -235,7 +371,11 @@ final class Player: ObservableObject {
                 return
             }
             list = songs.filter { $0.isEnginePlayable }
-            startAt = list.firstIndex(where: { $0.id == target.id }) ?? 0
+            // v115 (GPT round 2c): the target's filtered position is
+            // the number of playable songs BEFORE it. firstIndex
+            // finds the first copy of a duplicated song and restarts
+            // the queue from the wrong place.
+            startAt = songs[..<start].filter { $0.isEnginePlayable }.count
         }
         queue = list
         index = startAt
@@ -550,13 +690,30 @@ final class Player: ObservableObject {
     // (catalog id from its page, library id from a library list,
     // another edition's id from the ratings scan) - identity is
     // title+artist, not the raw id, or she sees the album twice.
-    private func albumIdentity(_ a: CollectionItem) -> String {
-        a.title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-            + "|" + a.sub.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    // v115 (GPT review item 10): identity is nil unless BOTH title
+    // and artist are present - the old code returned "|" for a
+    // metadata-less album, so every such album "matched" every
+    // other and they collapsed into one favorite.
+    private func albumIdentity(_ a: CollectionItem) -> String? {
+        let t = a.title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let sub = a.sub.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, !sub.isEmpty else { return nil }
+        return t + "|" + sub
     }
     func isFavAlbumItem(_ item: CollectionItem) -> Bool {
-        let key = albumIdentity(item)
-        return favAlbums.contains { $0.id == item.id || albumIdentity($0) == key }
+        if favAlbums.contains(where: { $0.id == item.id }) { return true }
+        guard let key = albumIdentity(item) else { return false }
+        return favAlbums.contains { albumIdentity($0) == key }
+    }
+    // v115 (GPT review item 12): catalog <-> library id pairs for
+    // the same album, learned from the library scan, so an
+    // un-favorite can delete the rating in BOTH id spaces, each
+    // with its own id.
+    private var albumLibIds: [String: String] = [:]
+    func noteAlbumPairs(_ pairs: [(libId: String, item: CollectionItem)]) {
+        for p in pairs where p.item.id != p.libId {
+            albumLibIds[p.item.id] = p.libId
+        }
     }
     // Collapse the persisted list to one entry per album: same id,
     // or same title+artist under a different id (untitled entries
@@ -566,8 +723,8 @@ final class Player: ObservableObject {
         var seenKeys = Set<String>()
         favAlbums = favAlbums.filter { a in
             guard seenIds.insert(a.id).inserted else { return false }
-            if !a.title.isEmpty {
-                guard seenKeys.insert(albumIdentity(a)).inserted else { return false }
+            if let key = albumIdentity(a) {
+                guard seenKeys.insert(key).inserted else { return false }
             }
             return true
         }
@@ -577,7 +734,7 @@ final class Player: ObservableObject {
             if !isFavAlbumItem(item) { favAlbums.insert(item, at: 0) }
         } else {
             let key = albumIdentity(item)
-            favAlbums.removeAll { $0.id == item.id || albumIdentity($0) == key }
+            favAlbums.removeAll { $0.id == item.id || (key != nil && albumIdentity($0) == key) }
         }
         persistFavAlbums()
     }
@@ -600,7 +757,22 @@ final class Player: ObservableObject {
                 if want {
                     if (try? await api.rateWrite(kind: "albums", id: item.id)) != nil { ok = true }
                 } else {
-                    if (try? await api.rateDelete(kind: "albums", id: item.id)) != nil { ok = true }
+                    // v115 (GPT review item 12): delete in BOTH
+                    // rating id spaces, each with its OWN id -
+                    // favoriteAlbums() reads "albums" and
+                    // "library-albums", and a rating left alive in
+                    // either space resurrects the album. A 404 in a
+                    // space counts as success (rateDelete).
+                    var targets: [(String, String)] = [
+                        (item.type == "library-albums" ? "library-albums" : "albums", item.id)
+                    ]
+                    if item.type != "library-albums", let lib = albumLibIds[item.id] {
+                        targets.append(("library-albums", lib))
+                    }
+                    ok = true
+                    for (kind, tid) in targets {
+                        if (try? await api.rateDelete(kind: kind, id: tid)) == nil { ok = false }
+                    }
                 }
                 if ok { written = want } else { failed = true; break }
             }
@@ -636,6 +808,10 @@ final class Player: ObservableObject {
 
     // MARK: - lock screen / remote
     private var lastArtworkKey = ""
+    private var lastArtworkImage: UIImage?
+    // v115: the iOS 26 animated artwork object, boxed as AnyObject
+    // so the property itself needs no availability annotation.
+    private var animatedArtworkBox: (songId: String, artwork: AnyObject)?
     private func setupRemote() {
         let cc = MPRemoteCommandCenter.shared()
         cc.playCommand.addTarget { [weak self] _ in self?.playOnly(); return .success }
@@ -674,16 +850,72 @@ final class Player: ObservableObject {
         let artKey = cur.playbackId + "|" + (cur.art(512, 512) ?? "")
         if artKey != lastArtworkKey, let artStr = cur.art(512, 512), let url = URL(string: artStr) {
             lastArtworkKey = artKey
-            URLSession.shared.dataTask(with: url) { data, _, _ in
+            URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
                 guard let data = data, let img = UIImage(data: data) else { return }
                 WidgetShared.publishArtwork(data)
-                var i2 = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? info
-                i2[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
-                MPNowPlayingInfoCenter.default().nowPlayingInfo = i2
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.lastArtworkImage = img
+                    var i2 = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? info
+                    i2[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+                    MPNowPlayingInfoCenter.default().nowPlayingInfo = i2
+                    self.attachAnimatedArtwork(song: cur, preview: img)
+                }
             }.resume()
         }
-        info[MPMediaItemPropertyArtwork] = nil
+        // v115: republish the current song's artwork WITH the info
+        // instead of wiping it - the old code nilled the artwork key
+        // on every state event and only the one-shot fetch re-added
+        // it, so the lock screen lost the cover on play/pause.
+        if artKey == lastArtworkKey, let img = lastArtworkImage {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+        }
+        if #available(iOS 26.0, *), let box = animatedArtworkBox, box.songId == cur.playbackId,
+           let aa = box.artwork as? MPMediaItemAnimatedArtwork {
+            info[MPNowPlayingInfoProperty1x1AnimatedArtwork] = aa
+        }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         WidgetShared.publish(title: cur.title, artist: cur.artist, isPlaying: isPlaying)
+    }
+
+    // v115: lock-screen ANIMATED artwork (iOS 26,
+    // MPMediaItemAnimatedArtwork). The system plays a LOCAL video
+    // file on the lock screen in place of the static cover; Apple's
+    // motion assets are streams, so the video handler downloads and
+    // remuxes the album's motion video on demand (passthrough
+    // export to a cached .mp4) and returns the file. The preview
+    // image is the static cover, available synchronously. Any
+    // failure along the way simply leaves the static artwork.
+    private func attachAnimatedArtwork(song: Song, preview: UIImage) {
+        if #available(iOS 26.0, *) {
+            guard MPNowPlayingInfoCenter.supportedAnimatedArtworkKeys
+                .contains(MPNowPlayingInfoProperty1x1AnimatedArtwork) else { return }
+            let songId = song.playbackId
+            let api = self.api
+            let animated = MPMediaItemAnimatedArtwork(
+                artworkID: "aoi-" + songId,
+                previewImageRequestHandler: { _ in preview },
+                videoAssetFileURLRequestHandler: { _ in
+                    guard let murl = await api.motionURLForSong(song),
+                          let src = URL(string: murl) else { return nil }
+                    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+                        .appendingPathComponent("motion", isDirectory: true)
+                    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    let dst = dir.appendingPathComponent(songId + ".mp4")
+                    if FileManager.default.fileExists(atPath: dst.path) { return dst }
+                    let asset = AVURLAsset(url: src)
+                    guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else { return nil }
+                    export.outputURL = dst
+                    export.outputFileType = .mp4
+                    await export.export()
+                    return export.status == .completed ? dst : nil
+                })
+            animatedArtworkBox = (songId, animated)
+            guard current?.playbackId == songId else { return }
+            var i3 = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            i3[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: preview.size) { _ in preview }
+            i3[MPNowPlayingInfoProperty1x1AnimatedArtwork] = animated
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = i3
+        }
     }
 }
