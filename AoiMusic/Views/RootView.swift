@@ -107,6 +107,12 @@ struct RootView: View {
             ToastOverlay(text: player.toast)
         }
         .animation(.easeInOut(duration: 0.28), value: nav.detail)
+        // v116: the keyboard shield goes on the OUTERMOST view, and
+        // only while the search page is up. v115 put it inside
+        // SearchView, but an ancestor still shrank for the keyboard
+        // and the field rode up anyway (her report). Other pages
+        // (AI chat) keep the normal keyboard behaviour.
+        .ignoresSafeArea(.keyboard, edges: page == .search ? .bottom : [])
         .onChange(of: scenePhase) { _, phase in
             // v115: the app returning to the foreground is a
             // recovery trigger alongside the engine page's own
