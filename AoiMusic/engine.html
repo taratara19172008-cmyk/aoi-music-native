@@ -34,7 +34,7 @@ window.alert = function (msg) {
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.14';
+window.ENGINE_VERSION = '109.15';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 // v109.13: alert plumbing (the override script sits before the
@@ -259,12 +259,18 @@ function playVerifyTick() {
     return;
   }
   if (d > 0 && t >= d - 0.75) { wantPlay = false; return; } // natural end
-  if (music.isPlaying || t > playWatch.lastT + 0.25) {
+  // v109.15: health is PROGRESS, not the isPlaying flag. Device
+  // evidence (Shazam, 2026-11-18 09:45): activating the recording
+  // session system-pauses the webview's media while MusicKit
+  // keeps reporting isPlaying=true - every flag said "playing"
+  // and the phone was silent. A frozen clock is the only honest
+  // signal; a nudge play() on a truly playing item is harmless.
+  if (t > playWatch.lastT + 0.25) {
     playWatch.lastT = t; playWatch.lastMoveAt = now;
     return;
   }
   if (now - playWatch.lastMoveAt < 6000) return;
-  if (playWatch.nudges >= 2) {
+  if (playWatch.nudges >= 3) {
     if (!playWatch.gaveUp) {
       playWatch.gaveUp = true;
       log('play verify: gave up on ' + id + ' (state=' + music.playbackState + ', t=' + t.toFixed(1) + ')');
@@ -273,7 +279,7 @@ function playVerifyTick() {
   }
   playWatch.nudges++;
   playWatch.lastMoveAt = now;
-  log('play verify: no progress for 6s while play was requested (state=' + music.playbackState + ') - resuming (nudge ' + playWatch.nudges + ')');
+  log('play verify: no progress for 6s while play was requested (state=' + music.playbackState + ', isPlaying=' + !!music.isPlaying + ') - resuming (nudge ' + playWatch.nudges + ')');
   op(() => bounded(music.play(), playTimeoutMs())).catch(() => {});
 }
 
