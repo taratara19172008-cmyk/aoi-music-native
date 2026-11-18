@@ -62,6 +62,82 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         lastError = lines.joined(separator: "\n")
     }
 
+    // v118/v119: the two scripts injected into every frame of
+    // every engine web view (main page + authorize popup).
+    static let dialogStubSource = #"""
+    (function () {
+      function report(kind, msg) {
+        try {
+          window.webkit.messageHandlers.aoi.postMessage({ type: 'jsdialog', kind: kind, message: String(msg == null ? '' : msg), host: String(location.host || '') });
+        } catch (e) {}
+      }
+      window.alert = function (m) { report('alert', m); };
+      window.confirm = function (m) { report('confirm', m); return false; };
+      window.prompt = function (m) { report('prompt', m); return null; };
+    })();
+    """#
+
+    // v119: the "The operation was aborted." ghost was never a JS
+    // alert at all - her recordings show it sitting UNDER the app
+    // UI, never blocking touches, its OK button unreachable: a DOM
+    // dialog layer inside the (hit-test-disabled) engine web view.
+    // This hunter watches every frame's DOM for that exact error
+    // text, reports the container it found, and removes it. It
+    // matches one literal error string and requires a dialog-shaped
+    // container (a semantic dialog element, or a short element
+    // holding an OK button), so legitimate page UI is not at risk.
+    static let dialogHunterSource = #"""
+    (function () {
+      var TARGET = 'the operation was aborted';
+      function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }
+      function findBox(node) {
+        var el = node.parentElement;
+        for (var i = 0; el && el !== document.body && el !== document.documentElement && i < 8; i++) {
+          var text = norm(el.innerText || el.textContent);
+          if (text.indexOf(TARGET) === -1 || text.length > 300) { el = el.parentElement; continue; }
+          var semantic = false;
+          try { semantic = el.matches('dialog, [role="alertdialog"], [role="dialog"], [aria-modal="true"]'); } catch (e) {}
+          var hasOK = false;
+          try {
+            var btns = el.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]');
+            for (var j = 0; j < btns.length; j++) { if (norm(btns[j].innerText || btns[j].value) === 'ok') { hasOK = true; break; } }
+          } catch (e) {}
+          if (semantic || hasOK) return el;
+          el = el.parentElement;
+        }
+        return null;
+      }
+      function scan() {
+        try {
+          var walker = document.createTreeWalker(document, NodeFilter.SHOW_TEXT);
+          var node;
+          while ((node = walker.nextNode())) {
+            if (norm(node.nodeValue).indexOf(TARGET) === -1) continue;
+            var box = findBox(node);
+            if (!box) continue;
+            try {
+              window.webkit.messageHandlers.aoi.postMessage({ type: 'domdialog', tag: String(box.tagName || ''), id: String(box.id || ''), cls: String(box.className || '').slice(0, 120), text: norm(box.innerText || box.textContent).slice(0, 140) });
+            } catch (e) {}
+            try { if (box instanceof HTMLDialogElement && box.open) box.close(); } catch (e) {}
+            box.remove();
+            return;
+          }
+        } catch (e) {}
+      }
+      var scheduled = false;
+      function schedule() {
+        if (scheduled) return;
+        scheduled = true;
+        requestAnimationFrame(function () { scheduled = false; scan(); });
+      }
+      try {
+        var mo = new MutationObserver(schedule);
+        mo.observe(document, { subtree: true, childList: true, characterData: true });
+      } catch (e) {}
+      if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', scan); } else { scan(); }
+    })();
+    """#
+
     private var popupVC: UIViewController?
     private var popupWebView: WKWebView?
 
@@ -72,23 +148,12 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
         let ucc = WKUserContentController()
         // v118: stub JS dialogs in every frame (forMainFrameOnly:
-        // false). MusicKit surfaces fatal errors (MEDIA_KEY,
-        // "The operation was aborted.", "Load failed") through
-        // window.alert in frames the delegate never saw; the stub
-        // swallows them and reports each one to the Settings log.
-        let dialogStub = WKUserScript(source: #"""
-        (function () {
-          function report(kind, msg) {
-            try {
-              window.webkit.messageHandlers.aoi.postMessage({ type: 'jsdialog', kind: kind, message: String(msg == null ? '' : msg), host: String(location.host || '') });
-            } catch (e) {}
-          }
-          window.alert = function (m) { report('alert', m); };
-          window.confirm = function (m) { report('confirm', m); return false; };
-          window.prompt = function (m) { report('prompt', m); return null; };
-        })();
-        """#, injectionTime: .atDocumentStart, forMainFrameOnly: false)
-        ucc.addUserScript(dialogStub)
+        // false) and report each one to the Settings log. v119:
+        // the DOM dialog hunter joins it (see dialogHunterSource) -
+        // the ghost dialog turned out to be a DOM layer, not a JS
+        // alert, so the stub alone could never see it.
+        ucc.addUserScript(WKUserScript(source: Self.dialogStubSource, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        ucc.addUserScript(WKUserScript(source: Self.dialogHunterSource, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         config.userContentController = ucc
         webView = WKWebView(frame: .zero, configuration: config)
         // v112: transparent - the engine page paints nothing, and the
@@ -233,6 +298,13 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
             // (see init). Logged with its kind and host so a future
             // escape can be told apart from a stubbed one.
             logEvent("page dialog stubbed [\((body["kind"] as? String) ?? "?") @ \((body["host"] as? String) ?? "?")]: \((body["message"] as? String) ?? "")")
+        case "domdialog":
+            // v119: the DOM hunter found and removed the ghost
+            // dialog. frameInfo (Swift-side, trustworthy) says
+            // which frame it lived in; the body says what it was.
+            let f = message.frameInfo
+            let origin = f.isMainFrame ? "main frame" : ("subframe " + (f.request.url?.host ?? "?"))
+            logEvent("dom dialog removed [\(origin)]: \((body["tag"] as? String) ?? "?") \((body["text"] as? String) ?? "")")
         case "pong":
             if let n = (body["nonce"] as? NSNumber)?.intValue, n == pendingPongNonce {
                 pendingPongNonce = nil
@@ -338,6 +410,12 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
 
     // MARK: - Authorize popup (MusicKit JS opens a window)
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        // v119: the popup's configuration is a system-made clone;
+        // make sure it carries the same dialog stub + DOM hunter
+        // as the main engine page (a duplicate stub is idempotent,
+        // a duplicate hunter just finds nothing left to remove).
+        configuration.userContentController.addUserScript(WKUserScript(source: Self.dialogStubSource, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        configuration.userContentController.addUserScript(WKUserScript(source: Self.dialogHunterSource, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         let popup = WKWebView(frame: .zero, configuration: configuration)
         popup.uiDelegate = self
         popupWebView = popup
