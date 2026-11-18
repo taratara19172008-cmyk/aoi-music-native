@@ -22,7 +22,6 @@ struct RootView: View {
     @EnvironmentObject var engine: EngineBridge
     @EnvironmentObject var nav: AppNav
     @EnvironmentObject var api: APIClient
-    @EnvironmentObject var shazam: ShazamRecognizer
     @Environment(\.scenePhase) private var scenePhase
     @State private var page: Page = .home
     @State private var searchTerm = ""
@@ -97,39 +96,6 @@ struct RootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .transition(.opacity)
             }
-            // v115 (her spec): the Shazam button lives at the top
-            // of the left rail - the uppermost-left of the screen -
-            // not beside the Home greeting where v114 put it. The
-            // rail column starts at x=8 and is 74 wide, so 18pt of
-            // leading centres the 54pt button over it.
-            VStack {
-                HStack {
-                    ShazamButton()
-                        .padding(.leading, 18)
-                        .padding(.top, 2)
-                    Spacer()
-                }
-                Spacer()
-            }
-            // v115: while Shazam is listening, an unmistakable
-            // status pill rides the top centre - animated bars and
-            // the word Listening - so she always knows the state.
-            VStack {
-                if shazam.isListening {
-                    HStack(spacing: 8) {
-                        ListeningBars()
-                        Text(settings.t("shazam_listening"))
-                            .font(.subheadline.weight(.semibold))
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 9)
-                    .aoiGlass(corner: 20)
-                    .padding(.top, 2)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-                Spacer()
-            }
-            .animation(.easeInOut(duration: 0.25), value: shazam.isListening)
             ToastOverlay(text: player.toast)
         }
         .animation(.easeInOut(duration: 0.28), value: nav.detail)
@@ -152,21 +118,11 @@ struct RootView: View {
                 player.engine.ensureAlive { player.foregroundBecameVisible() }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .aoiShazamSongTap)) { note in
-            if let sid = note.userInfo?["songId"] as? String {
-                NotificationPresenter.pendingSongId = nil
-                playShazamSong(sid)
-            }
-        }
         .fullScreenCover(isPresented: $nav.showNowPlaying) {
             NowPlayingView()
         }
         .onAppear {
             WidgetShared.publishAccent(settings.accentHex)
-            if let sid = NotificationPresenter.pendingSongId {
-                NotificationPresenter.pendingSongId = nil
-                playShazamSong(sid)
-            }
         }
         .onChange(of: settings.accentHex) { _, hex in WidgetShared.publishAccent(hex) }
     }
@@ -245,19 +201,23 @@ struct RootView: View {
     }
 }
 
-// v119: excludes the keyboard safe area at the ROOT hosting
+// v120: excludes the keyboard safe area at the ROOT hosting
 // controller while `active` (the search page), and restores the
 // default regions otherwise. Three rounds of SwiftUI-level
 // keyboard shields failed because the keyboard kept participating
 // in the root layout and re-laying-out individual branches (the
 // search overlay received widened / clipped / bottom-docked rects
 // in her recordings; the mini player floated up too). Setting
-// safeAreaRegions = .container on the hosting controller (the app
-// owns it since v119 - see AoiMusicApp) removes the keyboard from
-// SwiftUI layout entirely for as long as it is set; the container
-// regions (notch, status bar, home indicator) are untouched. The
-// value is read back after setting, so the log line proves the
-// state instead of assuming it.
+// safeAreaRegions = .container on the hosting controller removes
+// the keyboard from SwiftUI layout entirely for as long as it is
+// set; the container regions (notch, status bar, home indicator)
+// are untouched. v119 owned the hosting controller through a
+// UIKit scene lifecycle to do this; v120 is back on WindowGroup
+// (the UIKit lifecycle regressed the root layout - blank bands
+// at both screen edges) and KeyboardRegionController reaches
+// SwiftUI's own hosting controller through a runtime probe
+// instead, logging the value read back so the state is proven,
+// not assumed.
 struct KeyboardRegionFixer: UIViewRepresentable {
     var active: Bool
     var onApply: (String) -> Void
@@ -285,47 +245,10 @@ struct KeyboardRegionFixer: UIViewRepresentable {
         }
 
         func applyRegions() {
-            AoiHostingController.setKeyboardExcluded(active) { [weak self] msg in
+            KeyboardRegionController.setKeyboardExcluded(active, window: window) { [weak self] msg in
                 self?.onApply?(msg)
             }
         }
-    }
-}
-
-// A tapped Shazam notification lands here: resolve the song in
-// the account storefront and play it, Now Playing open - the tap
-// IS her asking to hear it.
-extension RootView {
-    func playShazamSong(_ id: String) {
-        Task {
-            if let s = await api.songFull(id: id) {
-                player.playSongs([s], start: 0)
-                nav.showNowPlaying = true
-            }
-        }
-    }
-}
-
-// Four little bars that dance while Shazam listens.
-struct ListeningBars: View {
-    @EnvironmentObject var settings: AppSettings
-    @State private var on = false
-    private let up: [CGFloat] = [0.45, 1.0, 0.6, 0.85]
-    private let down: [CGFloat] = [0.9, 0.5, 1.0, 0.55]
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<4, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(settings.accent)
-                    .frame(width: 3.5, height: 14)
-                    .scaleEffect(y: on ? up[i] : down[i])
-                    .animation(.easeInOut(duration: 0.5)
-                        .repeatForever(autoreverses: true)
-                        .delay(Double(i) * 0.13), value: on)
-            }
-        }
-        .onAppear { on = true }
     }
 }
 
