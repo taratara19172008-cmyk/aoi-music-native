@@ -5,7 +5,8 @@ struct SearchView: View {
     @EnvironmentObject var player: Player
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var nav: AppNav
-    @State private var term = ""
+    @Binding var term: String
+    @State private var searchSeq = 0
     @State private var songs: [Song] = []
     @State private var albums: [CollectionItem] = []
     @State private var artists: [CollectionItem] = []
@@ -14,39 +15,17 @@ struct SearchView: View {
     @State private var searching = false
     @State private var addSong: Song?
 
-    // The search field lives OUTSIDE the scroll view (v107): inside it,
-    // tapping the field made the scroll view shove everything upward to
-    // keep the field clear of the keyboard. Pinned above the scroll area
-    // with the page ignoring the keyboard inset, the box does not move.
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField(settings.t("search_ph"), text: $term)
-                .onSubmit { runSearch() }
-                .submitLabel(.search)
-            if !term.isEmpty {
-                Button { term = ""; searched = false } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .aoiGlass(corner: 22)
-    }
-
     var body: some View {
-        // v115 (her spec): the field is back at its ORIGINAL position -
-        // a row in the layout flow above the scroll view. v114's
-        // overlay double-counted the safe area (the page already
-        // starts below it) and sat ~47pt too low, covering the
-        // "recent searches" title. The whole page ignores the
-        // keyboard inset, so tapping the field cannot shove it
-        // upward either - position restored, jump killed.
+        // v118 (B1): the field itself is NOT in this layout flow any
+        // more - after the v115 in-flow attempt and the v116 root
+        // shield both failed on device, the field now lives in a
+        // RootView overlay pinned to the top safe area (see
+        // SearchFieldView below and RootView). This clear spacer
+        // reserves exactly its height so results start where they
+        // always did.
         VStack(spacing: 10) {
-            searchBar
-                .padding(.horizontal, 6)
+            Color.clear
+                .frame(height: 44)
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
 
@@ -128,8 +107,9 @@ struct SearchView: View {
             }
             .scrollIndicators(.hidden)
         }
-        .ignoresSafeArea(.keyboard, edges: .bottom)
         .sheet(item: $addSong) { s in AddToPlaylistSheet(song: s) }
+        .onReceive(NotificationCenter.default.publisher(for: .aoiRunSearch)) { _ in runSearch() }
+        .onReceive(NotificationCenter.default.publisher(for: .aoiClearSearch)) { _ in searched = false }
     }
 
     private func openHistory(_ e: SearchEntity) {
@@ -181,19 +161,62 @@ struct SearchView: View {
     private func runSearch() {
         let q = term.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return }
+        searchSeq += 1
+        let seq = searchSeq
         searching = true
         searched = true
         Task {
             do {
                 let r = try await api.search(term: q)
+                guard seq == searchSeq else { return }
                 songs = r.results?.songs?.data ?? []
                 albums = r.results?.albums?.data ?? []
                 artists = r.results?.artists?.data ?? []
                 playlists = r.results?.playlists?.data ?? []
             } catch {
+                guard seq == searchSeq else { return }
                 songs = []; albums = []; artists = []; playlists = []
             }
-            searching = false
+            if seq == searchSeq { searching = false }
         }
+    }
+}
+
+
+extension Notification.Name {
+    static let aoiRunSearch = Notification.Name("aoiRunSearch")
+    static let aoiClearSearch = Notification.Name("aoiClearSearch")
+}
+
+// v118 (B1): the search field, hosted by RootView as an overlay
+// pinned to the top safe area while the search page is up. Two
+// rounds of in-flow placement (v115, v116) still rode up with the
+// keyboard on device; as an out-of-flow sibling anchored like the
+// Shazam button overlay - which never moved - it cannot be shoved
+// by the page's own layout. Submit/clear reach SearchView through
+// notifications so the results state stays where it lives.
+struct SearchFieldView: View {
+    @EnvironmentObject var settings: AppSettings
+    @Binding var term: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(settings.t("search_ph"), text: $term)
+                .onSubmit { NotificationCenter.default.post(name: .aoiRunSearch, object: nil) }
+                .submitLabel(.search)
+            if !term.isEmpty {
+                Button {
+                    term = ""
+                    NotificationCenter.default.post(name: .aoiClearSearch, object: nil)
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .aoiGlass(corner: 22)
     }
 }

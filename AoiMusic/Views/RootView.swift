@@ -25,6 +25,7 @@ struct RootView: View {
     @EnvironmentObject var shazam: ShazamRecognizer
     @Environment(\.scenePhase) private var scenePhase
     @State private var page: Page = .home
+    @State private var searchTerm = ""
     private let mainPages: [Page] = [.home, .search, .radio, .library]
 
     var body: some View {
@@ -70,6 +71,20 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .transition(.move(edge: .trailing))
                 .zIndex(5)
+            }
+            // v118 (B1): while the search page is up, the search
+            // field is an overlay pinned to the top safe area -
+            // the same anchoring as the Shazam overlay below, which
+            // has never moved. In-flow placement rode up with the
+            // keyboard in both v115 and v116.
+            if page == .search {
+                VStack(spacing: 0) {
+                    SearchFieldView(term: $searchTerm)
+                        .padding(.leading, 98)
+                        .padding(.trailing, 10)
+                    Spacer()
+                }
+                .transition(.opacity)
             }
             // v115 (her spec): the Shazam button lives at the top
             // of the left rail - the uppermost-left of the screen -
@@ -209,7 +224,7 @@ struct RootView: View {
     private var content: some View {
         switch page {
         case .home: HomeView()
-        case .search: SearchView()
+        case .search: SearchView(term: $searchTerm)
         case .radio: RadioView()
         case .library: LibraryView()
         case .favorites: FavoritesView()
