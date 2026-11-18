@@ -31,6 +31,10 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     let webView: WKWebView
     @Published var ready = false
     @Published var authorized = false
+    // v117: false until the CURRENT page generation posts its first
+    // auth state - distinguishes "engine still recovering" from a
+    // genuinely unauthorized account (problem 7's false "not connected").
+    @Published var authStateKnown = false
     @Published var storefront = ""
     @Published var userToken = ""
     @Published var lastError = ""
@@ -49,6 +53,8 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     var onError: ((String) -> Void)?
     var onForeground: (() -> Void)?
     var onQueue: (([String]) -> Void)?
+    var onPreviewHealed: ((String) -> Void)?
+    var onPreviewExhausted: ((String) -> Void)?
 
     func logEvent(_ s: String) {
         var lines = lastError.isEmpty ? [] : lastError.components(separatedBy: "\n")
@@ -98,6 +104,15 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         webView.loadHTMLString(html, baseURL: Self.engineBaseURL)
         logEvent("engine v" + engineVersion + " (" + engineSource + ")")
         fetchEngineUpdate(currentHTML: html)
+        startProbeTimer()
+    }
+
+    // v117 (GPT round 4, problem 7): the probe used to die forever
+    // once the engine first became ready (probe() invalidates it),
+    // so after a WebContent process termination nobody waited for
+    // the reloaded page to come back. The timer is now restartable.
+    private func startProbeTimer() {
+        probeTimer?.invalidate()
         probeTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in self?.probe() }
     }
 
@@ -171,6 +186,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
             logEvent("engine ready")
             if pendingAuthorize { pendingAuthorize = false; authorize() }
         case "auth":
+            authStateKnown = true
             authorized = (body["authorized"] as? Bool) ?? false
             storefront = (body["storefront"] as? String) ?? ""
             userToken = (body["token"] as? String) ?? ""
@@ -193,6 +209,18 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         case "error":
             logEvent(((body["where"] as? String) ?? "engine") + ": " + ((body["message"] as? String) ?? ""))
             onError?((body["where"] as? String) ?? "engine")
+        case "previewHealed":
+            onPreviewHealed?((body["id"] as? String) ?? "")
+        case "previewExhausted":
+            onPreviewExhausted?((body["id"] as? String) ?? "")
+        case "pong":
+            if let n = (body["nonce"] as? NSNumber)?.intValue, n == pendingPongNonce {
+                pendingPongNonce = nil
+                let cb = pongCompletion
+                pongCompletion = nil
+                logEvent("engine health check ok (ready=\((body["ready"] as? Bool) ?? false))")
+                cb?()
+            }
         default:
             break
         }
@@ -269,8 +297,22 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     // its own log (engine 109.13); this delegate covers both web
     // views regardless.
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
-        logEvent("page alert suppressed: \(message)")
+        logEvent("page alert suppressed [\(frame.request.url?.host ?? "?")]: \(message)")
         completionHandler()
+    }
+
+    // v117 (GPT round 4, problem 6): confirm/prompt get the same
+    // treatment - logged with the originating frame's host and
+    // answered with the safe default, so no engine-page dialog of
+    // any kind can ever surface as a native popup.
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        logEvent("page confirm suppressed [\(frame.request.url?.host ?? "?")]: \(message)")
+        completionHandler(false)
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+        logEvent("page prompt suppressed [\(frame.request.url?.host ?? "?")]: \(prompt)")
+        completionHandler(nil)
     }
 
     // MARK: - Authorize popup (MusicKit JS opens a window)
@@ -313,6 +355,52 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         if (error as NSError).code == NSURLErrorCancelled { return }
         logEvent("page load failed: " + error.localizedDescription)
     }
+    // MARK: - v117 engine liveness (GPT round 4, problem 7)
+    private var pendingPongNonce: Int? = nil
+    private var pongCompletion: (() -> Void)? = nil
+    private var pongNonceCounter = 0
+    private var lastEngineReloadAt = Date.distantPast
+
+    // Called when the app returns to the foreground. A healthy
+    // engine answers a nonce pong within ~4s; silence means the
+    // page died quietly (WebContent termination without a delegate
+    // call, or a boot that stalled under background throttling) and
+    // earns ONE bounded reload. The completion runs either way so
+    // the caller's foreground logic is never blocked for long.
+    func ensureAlive(completion: (() -> Void)? = nil) {
+        guard ready else {
+            logEvent("engine ensureAlive: not ready (pageLoaded=\(pageLoaded)) - probe restarted")
+            startProbeTimer()
+            if Date().timeIntervalSince(lastEngineReloadAt) > 30 {
+                lastEngineReloadAt = Date()
+                webView.reload()
+            }
+            completion?()
+            return
+        }
+        pongNonceCounter += 1
+        let nonce = pongNonceCounter
+        pendingPongNonce = nonce
+        pongCompletion = completion
+        call("window.AoiEngine && AoiEngine.healthCheck && AoiEngine.healthCheck(\(nonce))")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, self.pendingPongNonce == nonce else { return }
+            self.pendingPongNonce = nil
+            let cb = self.pongCompletion
+            self.pongCompletion = nil
+            self.logEvent("engine health check timed out - reloading engine page")
+            if Date().timeIntervalSince(self.lastEngineReloadAt) > 30 {
+                self.lastEngineReloadAt = Date()
+                self.ready = false
+                self.pageLoaded = false
+                self.authStateKnown = false
+                self.webView.reload()
+                self.startProbeTimer()
+            }
+            cb?()
+        }
+    }
+
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         // v111: a non-visible webview's WebContent process is a prime
         // candidate for termination under memory pressure; without a
@@ -332,7 +420,14 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         // the old page's authorization stand in for it. The engine
         // re-posts its auth state after configure.
         authorized = false
+        // v117: the new generation's auth is UNKNOWN until it posts;
+        // the UI must show "recovering", not "not connected". And
+        // the probe restarts so somebody waits for the page to
+        // finish booting (it used to stay dead after first ready).
+        authStateKnown = false
+        lastEngineReloadAt = Date()
         webView.reload()
+        startProbeTimer()
     }
     private static func topPresenter() -> UIViewController? {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
