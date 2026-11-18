@@ -101,7 +101,7 @@ const music = {
     for (const id of opts.songs || []) this.queue.items.push({ id: String(id) });
   },
   async play() { this.playCalls++; if (this.playHang) return new Promise(() => {}); this.isPlaying = true; },
-  async pause() {},
+  async pause() { this.pauseCalls = (this.pauseCalls || 0) + 1; this.isPlaying = false; },
   async skipToNextItem() { const q = this.queue; if (q.position < q.items.length - 1) { q.position++; this.nowPlayingItem = q.items[q.position] || null; } },
   async skipToPreviousItem() { const q = this.queue; if (q.position > 0) { q.position--; this.nowPlayingItem = q.items[q.position] || null; } },
   seekToTime() {},
@@ -110,7 +110,7 @@ const music = {
     this.currentPlaybackTime = 0; this.currentPlaybackDuration = 0;
     this.unresolvable = new Set(); this.jumpAbortTimes = 0; this.jumpLie = false;
     this.jumpHang = false; this.playHang = false; this.jumpCalls = 0;
-    this.playCalls = 0; this.setQueueCalls = []; this.isPlaying = false;
+    this.playCalls = 0; this.setQueueCalls = []; this.isPlaying = false; this.pauseCalls = 0;
     this.playLaterCalls = []; this.appendCalls = 0; this.playLaterGate = null; this.dataFormFails = false;
     posts.length = 0;
   },
@@ -131,7 +131,7 @@ const sandbox = {
   performance: { now: () => Date.now() },
   addEventListener: () => {},
   navigator: {},
-  document: { addEventListener: (n, f) => { listeners[n] = f; } },
+  document: { addEventListener: (n, f) => { listeners[n] = f; }, visibilityState: 'visible', hidden: false },
   webkit: { messageHandlers: { aoi: { postMessage: o => posts.push(o) } } },
   Request: FakeRequest,
   XMLHttpRequest: FakeXHR,
@@ -166,7 +166,7 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
     for (const fn of [...intervalCbs]) { try { fn(); } catch (e) {} }
   }, 10);
 
-  // ---- relay rules (v109.10: switchable, default DIRECT) ----
+  // ---- relay rules (109.21: switchable, default RELAY) ----
   rawFetchCalls.length = 0;
   await sandbox.fetch('https://api.music.apple.com/v1/catalog/cn/songs/123');
   check('v109.20 default: api fetch goes via RELAY', lastRaw() === RELAY + '?target=' + encodeURIComponent('https://api.music.apple.com/v1/catalog/cn/songs/123'));
@@ -344,26 +344,54 @@ const logHas = re => posts.some(p => p.type === 'log' && re.test(p.message || ''
   await sandbox.AoiEngine.jumpTo(0);
   check('jumpTo no queue: changeToMediaAtIndex NOT called, error posted', music.jumpCalls === 0 && errPosts().some(p => p.where === 'jumpTo'));
 
-  // ---- v109.11: data form skips the catalog fetch for the target ----
+  // ---- v109.21: the resource argument is IGNORED (data form is gone) ----
+  // Swift v120 still passes the tapped song's resource JSON as a
+  // 5th argument; the 109.10-based engine must resolve by ID only.
   music.reset();
-  const fetchesBefore = rawFetchCalls.length;
   const res111 = JSON.stringify({ id: '111', type: 'songs', attributes: { name: 'X', playParams: { id: '111', kind: 'song' } } });
   await sandbox.AoiEngine.playQueue(['111', '222', '333'], 0, false, 0, res111);
   await new Promise(r => setTimeout(r, 60));
-  check('data form: setQueue used items form, queue completed by ids', !!music.setQueueCalls[0].items && music.setQueueCalls[0].songs === undefined && JSON.stringify(music.queue.items.map(x => x.id)) === '["111","222","333"]' && logHas(/via data/));
-  check('data form: NO catalog fetch happened for the target', !rawFetchCalls.slice(fetchesBefore).some(u => String(u.url || u).includes('ids=111')));
+  check('resource arg ignored: setQueue used the ID form, queue completed', JSON.stringify(music.setQueueCalls[0].songs) === '["111"]' && music.setQueueCalls[0].items === undefined && JSON.stringify(music.queue.items.map(x => x.id)) === '["111","222","333"]' && !logHas(/via data/));
 
-  // ---- v109.11: data form failure falls back to the id form ----
-  music.reset(); music.dataFormFails = true;
-  await sandbox.AoiEngine.playQueue(['111', '222'], 0, false, 0, res111);
-  await new Promise(r => setTimeout(r, 60));
-  check('data form failure: fell back to ids and plays', music.setQueueCalls.length === 2 && JSON.stringify(music.setQueueCalls[1].songs) === '["111"]' && music.nowPlayingItem.id === '111' && logHas(/falling back to ids/));
+  // ---- v109.21 docking: authState / healthCheck / recoverAuth ----
+  check('docking methods exist', typeof sandbox.AoiEngine.authState === 'function' && typeof sandbox.AoiEngine.healthCheck === 'function' && typeof sandbox.AoiEngine.recoverAuth === 'function');
+  posts.length = 0;
+  sandbox.AoiEngine.healthCheck(42);
+  check('healthCheck posts pong with the nonce', posts.some(p => p.type === 'pong' && p.nonce === 42 && p.ready === true && p.authorized === true));
+  posts.length = 0;
+  sandbox.AoiEngine.authState();
+  check('authState posts the auth state', posts.some(p => p.type === 'auth' && p.authorized === true));
+  await sandbox.AoiEngine.recoverAuth();
+  check('recoverAuth while authorized: authorize() skipped, logged', logHas(/recoverAuth: already authorized/));
 
-  // ---- v109.11: a resource for a DIFFERENT song is ignored ----
+  // ---- v109.21: MEDIA_KEY is log-only ----
+  posts.length = 0;
+  check('__aoiOnMediaKey installed', typeof sandbox.__aoiOnMediaKey === 'function');
+  sandbox.__aoiOnMediaKey();
+  check('MEDIA_KEY handler only logs', logHas(/MEDIA_KEY observed/) && music.setQueueCalls.length === 1);
+
+  // ---- v109.21 preview heal: ONE id-only rebuild, then fail-closed ----
   music.reset();
-  const resOther = JSON.stringify({ id: '999', type: 'songs', attributes: { name: 'Y' } });
-  await sandbox.AoiEngine.playQueue(['111', '222'], 0, false, 0, resOther);
-  check('mismatched resource: id form used', JSON.stringify(music.setQueueCalls[0].songs) === '["111"]' && music.setQueueCalls[0].items === undefined);
+  await sandbox.AoiEngine.playQueue(['111', '222', '333'], 0, false, 0);
+  await new Promise(r => setTimeout(r, 60));
+  const sqBeforeHeal = music.setQueueCalls.length;
+  // The loaded asset turns out to be a 30s preview of a 200s song.
+  music.nowPlayingItem = { id: '111', attributes: { durationInMillis: 200000 } };
+  music.currentPlaybackDuration = 30;
+  let healWaited = 0;
+  while (music.setQueueCalls.length === sqBeforeHeal && healWaited < 9000) { await new Promise(r => setTimeout(r, 100)); healWaited += 100; }
+  check('preview heal: exactly one rebuild was issued', music.setQueueCalls.length === sqBeforeHeal + 1);
+  check('preview heal: the rebuild used the ID form', JSON.stringify(music.setQueueCalls[sqBeforeHeal].songs) === '["111"]' && music.setQueueCalls[sqBeforeHeal].items === undefined);
+  check('preview heal: rebuild logged', logHas(/single queue rebuild to re-acquire its license/));
+  // The rebuild lands as a preview AGAIN: fail closed (pause),
+  // never a second rebuild, never a previewExhausted post.
+  music.nowPlayingItem = { id: '111', attributes: { durationInMillis: 200000 } };
+  music.currentPlaybackDuration = 30;
+  music.isPlaying = true;
+  let blockWaited = 0;
+  while (!(music.pauseCalls > 0) && blockWaited < 9000) { await new Promise(r => setTimeout(r, 100)); blockWaited += 100; }
+  check('fail-closed: engine paused instead of playing out the preview', music.pauseCalls > 0 && logHas(/preview blocked after one rebuild/));
+  check('fail-closed: no second rebuild, no previewExhausted post', music.setQueueCalls.length === sqBeforeHeal + 1 && !posts.some(p => p.type === 'previewExhausted'));
 
   console.log(fails ? ('\n' + fails + ' FAILURES') : '\nALL PASS');
   process.exit(fails ? 1 : 0);
