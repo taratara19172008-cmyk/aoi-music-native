@@ -34,7 +34,7 @@ window.alert = function (msg) {
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.19';
+window.ENGINE_VERSION = '109.20';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 // v109.13: alert plumbing (the override script sits before the
@@ -66,14 +66,19 @@ let music = null;
 (function installRelay() {
   const relayBase = (window.AOI_CONFIG && window.AOI_CONFIG.relayBase) || '';
   if (!relayBase) return;
-  // v109.10: the relay is now a runtime switch, DEFAULT OFF (direct).
-  // GPT's full review (2026-11-17) pointed out the native engine ran
-  // direct v58-v108 and the relay was never A/B-tested under equal
-  // conditions; the Safari web app's speed cannot be credited to it.
-  // Direct also removes one shared-egress-IP throttling suspect.
-  // localStorage 'aoi-relay' = '1' re-enables it (AoiEngine.setRelay).
-  let relayOn = false;
-  try { relayOn = localStorage.getItem('aoi-relay') === '1'; } catch (e) {}
+  // v109.10: the relay is a runtime switch (AoiEngine.setRelay),
+  // localStorage 'aoi-relay' = '0' forces direct.
+  // v109.20: DEFAULT FLIPPED TO RELAY. The 2026-11-18 18:42 device
+  // log is the discriminating evidence GPT's v120 review asked
+  // for: on the DIRECT path a one-song data-form setQueue took
+  // 62.8s and the item then failed with a Playback Error (the
+  // license path), while the same phone/account on Safari - whose
+  // requests all ride this relay via the service worker - plays
+  // instantly. Direct was never A/B-proven either; it was simply
+  // the untested default. Relay is now the default so the app
+  // takes the same network path as the web app that works.
+  let relayOn = true;
+  try { relayOn = localStorage.getItem('aoi-relay') !== '0'; } catch (e) {}
   window.__aoiSetRelay = on => {
     relayOn = !!on;
     try { localStorage.setItem('aoi-relay', on ? '1' : '0'); } catch (e) {}
