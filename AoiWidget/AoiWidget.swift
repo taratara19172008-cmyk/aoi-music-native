@@ -55,6 +55,7 @@ struct NPProvider: TimelineProvider {
 
 struct NPWidgetView: View {
     var entry: NPEntry
+    @Environment(\.widgetFamily) private var family
 
     var body: some View {
         ZStack {
@@ -86,23 +87,44 @@ struct NPWidgetView: View {
             }
             VStack {
                 Spacer()
-                // v115: the three buttons travel as one centred
-                // group with real clearance from the widget's edges
-                // (the old row stretched them to the very sides).
-                HStack {
-                    Spacer()
-                    HStack(spacing: 20) {
-                        glassButton("backward.fill", intent: PrevIntent())
-                        glassButton(entry.isPlaying ? "pause.fill" : "play.fill", intent: ToggleIntent())
-                        glassButton("forward.fill", intent: NextIntent())
-                    }
-                    Spacer()
-                }
-                .padding(.bottom, 8)
+                buttonRow
+                    .padding(.bottom, 8)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .containerBackground(for: .widget) { artwork }
+    }
+
+    // v116 (her spec, refined twice): normal spacing, but the
+    // outer pair must keep real clearance from the widget's edges
+    // and never be clipped. v115's centred group was 196pt wide
+    // (three 52pt buttons + 2x20 spacing) inside a ~158pt small
+    // widget - it overflowed symmetrically and the outer glyphs
+    // were cut by the widget's corners, exactly what she reported.
+    // Small now gets 40pt buttons at 12 spacing (144pt total,
+    // inside the widget with margin to spare); larger families
+    // spread the 52pt buttons on equal spacers - distributed,
+    // never edge-hugging, never jammed together.
+    @ViewBuilder
+    private var buttonRow: some View {
+        if family == .systemSmall {
+            HStack(spacing: 12) {
+                glassButton("backward.fill", intent: PrevIntent(), size: 40, glyph: 20)
+                glassButton(entry.isPlaying ? "pause.fill" : "play.fill", intent: ToggleIntent(), size: 40, glyph: 20)
+                glassButton("forward.fill", intent: NextIntent(), size: 40, glyph: 20)
+            }
+            .frame(maxWidth: .infinity)
+        } else {
+            HStack {
+                Spacer()
+                glassButton("backward.fill", intent: PrevIntent(), size: 52, glyph: 24)
+                Spacer()
+                glassButton(entry.isPlaying ? "pause.fill" : "play.fill", intent: ToggleIntent(), size: 52, glyph: 24)
+                Spacer()
+                glassButton("forward.fill", intent: NextIntent(), size: 52, glyph: 24)
+                Spacer()
+            }
+        }
     }
 
     @ViewBuilder
@@ -143,9 +165,9 @@ struct NPWidgetView: View {
         }
     }
 
-    private func glassButton<I: AppIntent>(_ icon: String, intent: I) -> some View {
+    private func glassButton<I: AppIntent>(_ icon: String, intent: I, size: CGFloat, glyph glyphSize: CGFloat) -> some View {
         let glyph = Image(systemName: icon)
-            .font(.system(size: 24, weight: .bold))
+            .font(.system(size: glyphSize, weight: .bold))
         return Button(intent: intent) {
             ZStack {
                 glassGlyph(glyph)
@@ -156,7 +178,7 @@ struct NPWidgetView: View {
                     )
                     .contentTransition(.symbolEffect(.replace))
             }
-            .frame(width: 52, height: 52)
+            .frame(width: size, height: size)
             .shadow(color: .black.opacity(0.30), radius: 5, y: 2)
             .contentShape(Rectangle())
         }
