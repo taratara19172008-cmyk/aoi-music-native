@@ -34,7 +34,7 @@ window.alert = function (msg) {
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.15';
+window.ENGINE_VERSION = '109.16';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 // v109.13: alert plumbing (the override script sits before the
@@ -244,11 +244,29 @@ setInterval(() => {
 // raw playbackState so the next stall explains itself.
 let wantPlay = false;
 const playWatch = { itemId: null, lastT: -1, lastMoveAt: 0, nudges: 0, gaveUp: false };
+let expectedItemId = null;
+let healInFlight = false;
 function playVerifyTick() {
   if (!music || !wantPlay) return;
   if (document.visibilityState !== 'visible') return;
+  if (healInFlight) return;
   const item = music.nowPlayingItem;
-  if (!item) return;
+  if (!item) {
+    // v109.16 (GPT round 4): no current item while playback is owed.
+    // The old code returned silently forever, so a setQueue/play
+    // pair that settled without establishing an item was invisible.
+    // Watch the EXPECTED item and nudge play if it never appears.
+    if (!expectedItemId) return;
+    const nowN = Date.now();
+    if (playWatch.itemId !== expectedItemId) { playWatch.itemId = expectedItemId; playWatch.lastMoveAt = nowN; playWatch.nudges = 0; return; }
+    if (nowN - playWatch.lastMoveAt < 12000) return;
+    if (playWatch.nudges >= 3) return;
+    playWatch.nudges++;
+    playWatch.lastMoveAt = nowN;
+    post({ type: 'log', message: 'play verify: expected item ' + expectedItemId + ' never appeared - nudging play (attempt ' + playWatch.nudges + ')' });
+    op(async () => { try { await music.play(); } catch (e) {} }).catch(() => {});
+    return;
+  }
   const id = String(item.id);
   const t = music.currentPlaybackTime || 0;
   const d = music.currentPlaybackDuration || 0;
@@ -336,6 +354,7 @@ function previewHealTick(fromMediaKey) {
   if (!isPreview) {
     if (healAttempts[id]) {
       post({ type: 'log', message: 'preview heal: ' + id + ' is full-length now (' + Math.round(d) + 's)' });
+      post({ type: 'previewHealed', id: id, generation: queueReqToken });
       delete healAttempts[id];
     }
     return;
@@ -349,6 +368,7 @@ function previewHealTick(fromMediaKey) {
       healGiveUpLogged[id] = 1;
       post({ type: 'log', message: 'preview heal: gave up on ' + id + ' after 2 rebuilds (asset still ' + Math.round(d) + 's vs catalog ' + Math.round(exp) + 's)' });
       post({ type: 'error', where: 'previewHeal', message: 'preview persists for ' + id });
+      post({ type: 'previewExhausted', id: id, generation: queueReqToken });
     }
     return;
   }
@@ -357,7 +377,7 @@ function previewHealTick(fromMediaKey) {
   healLastTry = Date.now();
   const seekBack = t;
   post({ type: 'log', message: 'preview heal: ' + id + ' loaded as a ' + Math.round(d) + 's preview (catalog ' + Math.round(exp) + 's) - force-rebuilding the queue to re-acquire its license (attempt ' + (used + 1) + ')' });
-  op(async () => { await rebuildQueueAtCurrent(seekBack); }).catch(() => {});
+  op(async () => { healInFlight = true; try { await rebuildQueueAtCurrent(seekBack); } finally { healInFlight = false; } }).catch(() => {});
 }
 
 // ---------- v109.10 diagnostics: JS heartbeat + visibility ----------
@@ -701,10 +721,25 @@ window.AoiEngine = {
   forceReload() {
     if (!music) return;
     return op(async () => {
+      // v109.16 (GPT round 4): self-check first. Swift may ask for a
+      // reload after the engine already healed the song itself;
+      // rebuilding a healthy queue restarts the song for nothing
+      // (device log 2026-11-18 09:50: three rebuilds in ~15s).
+      const fit = music.nowPlayingItem;
+      const fexp = fit && fit.attributes ? (fit.attributes.durationInMillis || 0) / 1000 : 0;
+      const fd = music.currentPlaybackDuration || 0;
+      if (fit && fexp > 90 && fd >= 45) {
+        post({ type: 'log', message: 'forceReload: current asset already full-length (' + Math.round(fd) + 's) - play only, no rebuild' });
+        try { await music.play(); } catch (e) {}
+        return;
+      }
       const t = music.currentPlaybackTime || 0;
       post({ type: 'log', message: 'forceReload: rebuilding the queue at the current song to re-acquire its license' });
       await rebuildQueueAtCurrent(t);
     }).catch(() => {});
+  },
+  healthCheck(nonce) {
+    post({ type: 'pong', nonce: nonce, ready: !!music, authorized: !!(music && music.isAuthorized), storefront: music ? (music.storefrontId || '') : '' });
   },
   async unauthorize() {
     if (!music) return;
@@ -729,6 +764,7 @@ window.AoiEngine = {
       const t0 = Date.now();
       appShuffle = sh; appRepeat = rp;
       const targetId = String(ids[start]);
+      expectedItemId = targetId;
       appQueueIds = ids.map(String);
       // v109.6: rotation is the ONLY tap path. On device,
       // changeToMediaAtIndex in this webview aborts, crawls (~5s) or
@@ -745,6 +781,7 @@ window.AoiEngine = {
           // the call-time bump retired the background completion
           // still landing for this very list, so the rest of the
           // list silently never arrived.
+          wantPlay = true; playWatch.itemId = null;
           music.shuffleMode = sh ? 1 : 0;
           music.repeatMode = mkRepeat(rp);
           const pr0 = await bounded(music.play(), playTimeoutMs());
@@ -830,6 +867,7 @@ window.AoiEngine = {
       // v109.6: no changeToMediaAtIndex (see playQueue). Re-rotate the
       // engine's current queue so the tapped song is at the head.
       const targetId = appQueueIds[i | 0];
+      expectedItemId = targetId;
       const cur = loadedQueueIds();
       if (!targetId || !cur.length) {
         // v109.10: the old fallback called changeToMediaAtIndex -
@@ -842,6 +880,7 @@ window.AoiEngine = {
         return;
       }
       if (music.nowPlayingItem && String(music.nowPlayingItem.id) === targetId) {
+        wantPlay = true; playWatch.itemId = null;
         await bounded(music.play(), playTimeoutMs());
         return;
       }
