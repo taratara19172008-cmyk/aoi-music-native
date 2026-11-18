@@ -118,7 +118,13 @@ struct RootView: View {
             // recovery trigger alongside the engine page's own
             // visibility signal (Player decides if anything is
             // actually wrong before acting).
-            if phase == .active { player.foregroundBecameVisible() }
+            if phase == .active {
+                // v117 (GPT round 4, problem 7): bridge liveness
+                // first - if the engine page died in the background
+                // it is revived (or its recovery started) BEFORE
+                // the player's foreground logic reads its state.
+                player.engine.ensureAlive { player.foregroundBecameVisible() }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .aoiShazamSongTap)) { note in
             if let sid = note.userInfo?["songId"] as? String {
