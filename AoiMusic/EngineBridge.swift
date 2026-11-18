@@ -11,6 +11,21 @@ struct EngineItem: Decodable {
     var duration: Double?
 }
 
+// v115 (GPT review item 4): WKUserContentController retains its
+// message handlers, so registering the bridge directly created a
+// retain cycle (bridge -> webView -> configuration -> ucc ->
+// bridge). The bridge lives for the app's whole lifetime, so the
+// cycle was inert in practice, but the weak proxy costs nothing
+// and removes it. The bridge must hold the proxy STRONGLY (a weak
+// handler that deallocates would silently stop all messages).
+private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+    init(_ target: WKScriptMessageHandler) { self.target = target }
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.userContentController(userContentController, didReceive: message)
+    }
+}
+
 final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
     static let engineBaseURL = URL(string: "https://music.apple.com")!
     let webView: WKWebView
@@ -22,6 +37,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     @Published var pageLoaded = false
     @Published var engineVersion = ""
     @Published var engineSource = ""
+    private var scriptProxy: WeakScriptMessageHandler?
     private var pendingAuthorize = false
     private var probeTimer: Timer?
     private var lastProbe = ""
@@ -31,6 +47,7 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     var onItem: ((EngineItem?) -> Void)?
     var onProgress: ((Double, Double, Bool) -> Void)?
     var onError: ((String) -> Void)?
+    var onForeground: (() -> Void)?
     var onQueue: (([String]) -> Void)?
 
     func logEvent(_ s: String) {
@@ -57,7 +74,9 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         webView.isOpaque = false
         webView.backgroundColor = .clear
         super.init()
-        ucc.add(self, name: "aoi")
+        let proxy = WeakScriptMessageHandler(self)
+        scriptProxy = proxy
+        ucc.add(proxy, name: "aoi")
         webView.uiDelegate = self
         webView.navigationDelegate = self
         // v109: load the newest engine available - the online-updated
@@ -167,6 +186,8 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
             }
         case "progress":
             onProgress?((body["t"] as? Double) ?? 0, (body["d"] as? Double) ?? 0, (body["isPlaying"] as? Bool) ?? false)
+        case "foreground":
+            onForeground?()
         case "queue":
             onQueue?((body["ids"] as? [String]) ?? [])
         case "error":
@@ -216,6 +237,9 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         }
     }
     func unauthorize() { call("window.AoiEngine && AoiEngine.unauthorize()") }
+    // v115: auth self-check + serialized recovery (engine 109.12).
+    func requestAuthState() { call("window.AoiEngine && AoiEngine.authState()") }
+    func recoverAuth() { call("window.AoiEngine && AoiEngine.recoverAuth()") }
     func playQueue(ids: [String], start: Int, shuffle: Bool, repeatMode: Int, targetJSON: String? = nil) {
         let arr = ids.map { jsString($0) }.joined(separator: ",")
         let dataArg = targetJSON.map { ", " + jsString($0) } ?? ""
@@ -280,7 +304,12 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
         // app is relaunched. Reload is the platform's prescribed
         // recovery; the probe timer and authorize queue pick up from
         // the reloaded page's boot/ready messages.
-        logEvent("web content process terminated, reloading engine")
+        // v115 (GPT patch 14): record what authorization looked like
+        // BEFORE the reload wipes it - a termination that keeps
+        // recurring is the prime suspect for the "logged out by
+        // itself" reports, and the reloaded page's own snapshot
+        // (auth[configure]) completes the before/after pair.
+        logEvent("web content process terminated (was authorized=\(authorized) storefront=\(storefront)), reloading engine")
         ready = false
         pageLoaded = false
         // v112: the reloaded page is a NEW JS environment - do not let
