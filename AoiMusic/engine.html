@@ -34,7 +34,7 @@ window.alert = function (msg) {
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.13';
+window.ENGINE_VERSION = '109.14';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 // v109.13: alert plumbing (the override script sits before the
@@ -224,7 +224,58 @@ setInterval(() => {
   if (!music) return;
   post({ type: 'progress', t: music.currentPlaybackTime || 0, d: music.currentPlaybackDuration || 0, isPlaying: !!music.isPlaying });
   previewHealTick(false);
+  playVerifyTick();
 }, 500);
+
+// ---------- v109.14: play-start verification ----------
+// Device evidence (2026-11-18 09:40): she tapped a song, the log
+// showed setQueue settled in 25ms and play settled in 0ms - and
+// then NOTHING: no progress, no error, the mini player sat paused.
+// MusicKit accepted both commands while the item's load was being
+// suspended (the page hid moments later as she switched apps) and
+// never actually began playback. This watcher closes that hole
+// with the smallest possible intervention: while the user's last
+// intent is PLAY and the page is visible, if the current item
+// shows no progress and is not playing for 6s, issue ONE bare
+// play() - the exact equivalent of tapping play again. It never
+// touches the queue (the v105-v107 lesson: re-issuing queue
+// operations against the engine is what broke switching), it is
+// capped at 2 nudges per item, and every nudge is logged with the
+// raw playbackState so the next stall explains itself.
+let wantPlay = false;
+const playWatch = { itemId: null, lastT: -1, lastMoveAt: 0, nudges: 0, gaveUp: false };
+function playVerifyTick() {
+  if (!music || !wantPlay) return;
+  if (document.visibilityState !== 'visible') return;
+  const item = music.nowPlayingItem;
+  if (!item) return;
+  const id = String(item.id);
+  const t = music.currentPlaybackTime || 0;
+  const d = music.currentPlaybackDuration || 0;
+  const now = Date.now();
+  if (playWatch.itemId !== id) {
+    playWatch.itemId = id; playWatch.lastT = t; playWatch.lastMoveAt = now;
+    playWatch.nudges = 0; playWatch.gaveUp = false;
+    return;
+  }
+  if (d > 0 && t >= d - 0.75) { wantPlay = false; return; } // natural end
+  if (music.isPlaying || t > playWatch.lastT + 0.25) {
+    playWatch.lastT = t; playWatch.lastMoveAt = now;
+    return;
+  }
+  if (now - playWatch.lastMoveAt < 6000) return;
+  if (playWatch.nudges >= 2) {
+    if (!playWatch.gaveUp) {
+      playWatch.gaveUp = true;
+      log('play verify: gave up on ' + id + ' (state=' + music.playbackState + ', t=' + t.toFixed(1) + ')');
+    }
+    return;
+  }
+  playWatch.nudges++;
+  playWatch.lastMoveAt = now;
+  log('play verify: no progress for 6s while play was requested (state=' + music.playbackState + ') - resuming (nudge ' + playWatch.nudges + ')');
+  op(() => bounded(music.play(), playTimeoutMs())).catch(() => {});
+}
 
 // ---------- v109.13: preview self-heal (the 30-second fix) ----------
 // What the 2026-11-18 09:05 device log proved: authorization was
@@ -708,7 +759,7 @@ window.AoiEngine = {
       // v109.9: tapped song first, the rest of the queue lands in
       // the background (see startRotated).
       const okStart = await startRotated(rotated, targetId, token, tData);
-      if (okStart) queueOffset = start;
+      if (okStart) { queueOffset = start; wantPlay = true; playWatch.itemId = null; }
       post({ type: 'log', message: 'playQueue settled in ' + (Date.now() - t0) + 'ms' });
     }).catch(e => reportErr('playQueue', e));
   },
@@ -724,10 +775,11 @@ window.AoiEngine = {
       const r2 = await bounded(music.play(), playTimeoutMs());
       if (r2.timeout) post({ type: 'log', message: 'station play TIMED OUT (left running)' });
       else if (!r2.ok) throw r2.error;
+      else { wantPlay = true; playWatch.itemId = null; }
     }).catch(e => reportErr('station', e));
   },
-  play() { if (music) return op(() => bounded(music.play(), playTimeoutMs())).catch(() => {}); },
-  pause() { if (music) return op(() => bounded(music.pause(), playTimeoutMs())).catch(() => {}); },
+  play() { wantPlay = true; if (music) return op(() => bounded(music.play(), playTimeoutMs())).catch(() => {}); },
+  pause() { wantPlay = false; if (music) return op(() => bounded(music.pause(), playTimeoutMs())).catch(() => {}); },
   next() {
     if (!music) return;
     return op(async () => {
