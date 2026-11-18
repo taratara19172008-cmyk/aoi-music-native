@@ -277,12 +277,20 @@ struct NowPlayingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
             if let cur = player.current {
-                ShareLink(item: URL(string: cur.attributes?.url ?? "https://music.apple.com/\(api.storefront)/song/\(cur.playbackId)")!) {
-                    GlyphGlassIcon(icon: "square.and.arrow.up", size: 21, tint: fg)
-                        .frame(width: 46, height: 46)
-                        .contentShape(Rectangle())
+                // v115 (GPT review item 2): the old line force-
+                // unwrapped a URL built from attributes.url - a
+                // non-nil but unparseable value skipped the fallback
+                // and trapped. Parse first, fall back on failure,
+                // and simply omit the button if both fail.
+                if let shareURL = (cur.attributes?.url.flatMap { URL(string: $0) })
+                    ?? URL(string: "https://music.apple.com/\(api.storefront)/song/\(cur.playbackId)") {
+                    ShareLink(item: shareURL) {
+                        GlyphGlassIcon(icon: "square.and.arrow.up", size: 21, tint: fg)
+                            .frame(width: 46, height: 46)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
                 Button { player.toggleFav(cur, lang: settings.lang) } label: {
                     GlyphGlassIcon(icon: player.isFav(cur) ? "heart.fill" : "heart", size: 21,
                                    tint: player.isFav(cur) ? settings.accent : fg)
