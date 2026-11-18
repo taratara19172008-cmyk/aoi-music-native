@@ -34,7 +34,7 @@ window.alert = function (msg) {
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.18';
+window.ENGINE_VERSION = '109.19';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 // v109.13: alert plumbing (the override script sits before the
@@ -42,7 +42,11 @@ post({ type: 'boot' });
 window.__aoiPostAlert = function (s) { post({ type: 'log', message: 'page alert suppressed: ' + String(s).slice(0, 200) }); };
 (window.__aoiAlerts || []).forEach(function (s) { window.__aoiPostAlert(s); });
 window.__aoiAlerts = [];
-window.__aoiOnMediaKey = function () { previewHealTick(true); };
+// v109.19 (GPT v120 verdict): a MEDIA_KEY error means a license
+// request just failed - that is the worst possible moment to
+// rebuild the queue. Log it only; the rewritten preview heal
+// decides on stable evidence whether a rebuild is warranted.
+window.__aoiOnMediaKey = function () { post({ type: 'log', message: 'MEDIA_KEY observed; awaiting stable preview confirmation' }); };
 const swReady = Promise.resolve();
 let music = null;
 
@@ -223,8 +227,9 @@ function authSnapshot(tag) {
 setInterval(() => {
   if (!music) return;
   post({ type: 'progress', t: music.currentPlaybackTime || 0, d: music.currentPlaybackDuration || 0, isPlaying: !!music.isPlaying });
-  previewHealTick(false);
+  previewHealTick();
   playVerifyTick();
+  completionGateTick();
 }, 500);
 
 // ---------- v109.14: play-start verification ----------
@@ -240,16 +245,20 @@ setInterval(() => {
 // play() - the exact equivalent of tapping play again. It never
 // touches the queue (the v105-v107 lesson: re-issuing queue
 // operations against the engine is what broke switching), it is
-// capped at 2 nudges per item, and every nudge is logged with the
-// raw playbackState so the next stall explains itself.
+// capped at ONE nudge per item (v109.19, GPT v120 verdict: the
+// nudge treats "command accepted, playback never started" - it
+// is not a license-recovery tool and must never impersonate
+// one), and every nudge is logged with the raw playbackState so
+// the next stall explains itself.
 let wantPlay = false;
 const playWatch = { itemId: null, lastT: -1, lastMoveAt: 0, nudges: 0, gaveUp: false };
 let expectedItemId = null;
 let healInFlight = false;
+let healScheduled = false;
 function playVerifyTick() {
   if (!music || !wantPlay) return;
   if (document.visibilityState !== 'visible') return;
-  if (healInFlight) return;
+  if (healInFlight || healScheduled) return;
   const item = music.nowPlayingItem;
   if (!item) {
     // v109.16 (GPT round 4): no current item while playback is owed.
@@ -260,7 +269,7 @@ function playVerifyTick() {
     const nowN = Date.now();
     if (playWatch.itemId !== expectedItemId) { playWatch.itemId = expectedItemId; playWatch.lastMoveAt = nowN; playWatch.nudges = 0; return; }
     if (nowN - playWatch.lastMoveAt < 12000) return;
-    if (playWatch.nudges >= 3) return;
+    if (playWatch.nudges >= 1) return;
     playWatch.nudges++;
     playWatch.lastMoveAt = nowN;
     post({ type: 'log', message: 'play verify: expected item ' + expectedItemId + ' never appeared - nudging play (attempt ' + playWatch.nudges + ')' });
@@ -271,6 +280,11 @@ function playVerifyTick() {
   const t = music.currentPlaybackTime || 0;
   const d = music.currentPlaybackDuration || 0;
   const now = Date.now();
+  // v109.19: a confirmed preview asset is the heal's territory -
+  // a bare play() cannot re-acquire a license, so do not nudge.
+  const ia = item.attributes || {};
+  const iexp = ia.durationInMillis ? ia.durationInMillis / 1000 : 0;
+  if (iexp > 90 && d > 10 && d < 45 && d < iexp * 0.6) return;
   if (playWatch.itemId !== id) {
     playWatch.itemId = id; playWatch.lastT = t; playWatch.lastMoveAt = now;
     playWatch.nudges = 0; playWatch.gaveUp = false;
@@ -288,7 +302,7 @@ function playVerifyTick() {
     return;
   }
   if (now - playWatch.lastMoveAt < 6000) return;
-  if (playWatch.nudges >= 3) {
+  if (playWatch.nudges >= 1) {
     if (!playWatch.gaveUp) {
       playWatch.gaveUp = true;
       log('play verify: gave up on ' + id + ' (state=' + music.playbackState + ', t=' + t.toFixed(1) + ')');
@@ -301,26 +315,48 @@ function playVerifyTick() {
   op(() => bounded(music.play(), playTimeoutMs())).catch(() => {});
 }
 
-// ---------- v109.13: preview self-heal (the 30-second fix) ----------
-// What the 2026-11-18 09:05 device log proved: authorization was
-// FINE (auth[configure] isAuthorized=true, mut=yes) while songs kept
-// landing as 30s previews, with catalog fetches crawling at 26s -
-// the webPlayback/FairPlay license for those items failed inside a
-// throttled window and MusicKit silently substituted the preview
-// asset. The v115 Swift recovery then re-queued through playQueue,
-// whose same-list shortcut answered 'play only' - the loaded item
-// never re-ran license acquisition, so the recovery was a no-op.
-// The heal therefore lives HERE, where the asset duration is
-// visible: when the loaded asset is a preview of a full-length
-// catalog item, force a REAL queue rebuild (fresh setQueue, fresh
-// license), restore the position, at most twice per song, only
-// while the page is visible. Detection compares the loaded asset
+// ---------- v109.19: preview self-heal, rewritten (GPT v120) ----------
+// The diagnosis GPT converged on from the full evidence: the
+// failure is the full-track webPlayback/FairPlay license request
+// dying inside a throttled window; MusicKit then silently
+// substitutes the 30s preview asset. The 109.13-109.18 heal
+// AMPLIFIED that failure: it counted an attempt and enqueued a
+// rebuild while a previous rebuild could still be sitting in the
+// op chain (healInFlight was only set once the op STARTED), so
+// one license failure could become repeated whole-queue rebuilds,
+// each re-rolling the license dice inside the same bad window.
+// The v109.19 policy, exactly as specified:
+//  - detection: same item, catalog > 90s, asset stably 10-45s and
+//    < 60% of catalog across 2.5s of consecutive ticks;
+//  - the page must be visible and have been visible for 3s;
+//  - no setQueue / queue completion / other recovery in flight;
+//  - SINGLE-FLIGHT: healScheduled is set BEFORE the op is queued,
+//    so a second rebuild can never even enqueue;
+//  - ONE rebuild per song per foreground epoch (an epoch ends
+//    when the page hides; a fresh attempt is earned only by
+//    returning to the foreground and re-confirming the preview);
+//  - on failure the badge stays (previewExhausted posts once per
+//    epoch so Swift can mark it) and nothing retries in-window.
+// Detection still compares the loaded asset
 // (currentPlaybackDuration) against the catalog duration on the
 // item itself - no extra fetch.
-const healAttempts = {};
-const healTryAt = {};
-const healGiveUpLogged = {};
-let healLastTry = 0;
+const healEpochById = {};
+const healExhaustedPosted = {};
+let previewStableId = null;
+let previewStableSince = 0;
+let foregroundEpoch = 0;
+let visibleSince = Date.now();
+let setQueueInFlight = 0;
+let completionActive = false;
+function assetIsPreview(it) {
+  if (!it || !music) return null;
+  const a = it.attributes || {};
+  const exp = a.durationInMillis ? a.durationInMillis / 1000 : 0;
+  if (!exp || exp <= 90) return null;
+  const d = music.currentPlaybackDuration || 0;
+  if (d > 10 && d < 45 && d < exp * 0.6) return { exp: exp, d: d };
+  return null;
+}
 async function rebuildQueueAtCurrent(seekBack, expectId) {
   const it = music && music.nowPlayingItem;
   if (!it) return false;
@@ -346,65 +382,69 @@ async function rebuildQueueAtCurrent(seekBack, expectId) {
   }
   return ok;
 }
-function previewHealTick(fromMediaKey) {
-  if (!music || !music.nowPlayingItem) return;
+function previewHealTick() {
+  if (!music || !music.nowPlayingItem) { previewStableId = null; return; }
   const it = music.nowPlayingItem;
   const id = String(it.id || '');
   if (!id) return;
-  const a = it.attributes || {};
-  const exp = a.durationInMillis ? a.durationInMillis / 1000 : 0;
-  if (!exp || exp <= 90) return;
-  const d = music.currentPlaybackDuration || 0;
-  const isPreview = d > 10 && d < 45 && d < exp * 0.6;
-  if (!isPreview) {
-    if (healAttempts[id]) {
-      // v109.17: declare victory only on a CREDIBLE full duration.
-      // Device log 2026-11-18 10:48: right after a rebuild the new
-      // item's duration reads 0 (unknown), the old code cried
-      // "full-length now (0s)", cleared the badge AND the attempt
-      // counter - then the asset landed as a preview again and the
-      // whole cycle repeated, burning the session's attempts on
-      // phantom successes.
-      const credible = d >= Math.max(45, exp * 0.6);
-      if (credible) {
+  const pv = assetIsPreview(it);
+  if (!pv) {
+    if (healEpochById[id] != null) {
+      // v109.17's lesson stands: declare victory only on a
+      // CREDIBLE full duration - right after a rebuild the new
+      // item's duration reads 0 (unknown), and calling that
+      // "healed" cleared the badge on a phantom success.
+      const a = it.attributes || {};
+      const exp = a.durationInMillis ? a.durationInMillis / 1000 : 0;
+      const d = music.currentPlaybackDuration || 0;
+      if (exp > 90 && d >= Math.max(45, exp * 0.6)) {
         post({ type: 'log', message: 'preview heal: ' + id + ' is full-length now (' + Math.round(d) + 's)' });
         post({ type: 'previewHealed', id: id, generation: queueReqToken });
-        delete healAttempts[id];
-        delete healTryAt[id];
-        delete healGiveUpLogged[id];
+        delete healEpochById[id];
       }
+    }
+    previewStableId = null;
+    return;
+  }
+  // Stability: the same item must read as a preview continuously
+  // for 2.5s before anything is scheduled - a duration still
+  // settling after a queue change is not evidence.
+  const now = Date.now();
+  if (previewStableId !== id) { previewStableId = id; previewStableSince = now; return; }
+  if (now - previewStableSince < 2500) return;
+  // This epoch's single rebuild already ran and the asset is
+  // still a preview: report exhaustion once and stand down until
+  // the next foreground window. No in-window retries, ever.
+  if (healEpochById[id] === foregroundEpoch) {
+    const key = id + '@' + foregroundEpoch;
+    if (!healScheduled && !healInFlight && !healExhaustedPosted[key]) {
+      healExhaustedPosted[key] = 1;
+      post({ type: 'log', message: 'preview heal: ' + id + ' still a preview after this window\'s single rebuild (asset ' + Math.round(pv.d) + 's vs catalog ' + Math.round(pv.exp) + 's) - standing down until the next foreground window' });
+      post({ type: 'error', where: 'previewHeal', message: 'preview persists for ' + id });
+      post({ type: 'previewExhausted', id: id, generation: queueReqToken });
     }
     return;
   }
-  const t = music.currentPlaybackTime || 0;
-  if (!fromMediaKey && t < 2) return;
   if (document.visibilityState !== 'visible') return;
-  let used = healAttempts[id] || 0;
-  if (used >= 2) {
-    // v109.17: a song that relapses long after its attempts were
-    // spent (license lost again in a later window) earns a fresh
-    // pair of attempts - the give-up is per-window, not per-session.
-    if (Date.now() - (healTryAt[id] || 0) > 600000) {
-      delete healAttempts[id];
-      delete healGiveUpLogged[id];
-      used = 0;
-    } else {
-      if (!healGiveUpLogged[id]) {
-        healGiveUpLogged[id] = 1;
-        post({ type: 'log', message: 'preview heal: gave up on ' + id + ' after 2 rebuilds (asset still ' + Math.round(d) + 's vs catalog ' + Math.round(exp) + 's)' });
-        post({ type: 'error', where: 'previewHeal', message: 'preview persists for ' + id });
-        post({ type: 'previewExhausted', id: id, generation: queueReqToken });
+  if (now - visibleSince < 3000) return;
+  if (healScheduled || healInFlight) return;
+  if (setQueueInFlight > 0 || completionActive) return;
+  healEpochById[id] = foregroundEpoch;
+  const seekBack = music.currentPlaybackTime || 0;
+  post({ type: 'log', message: 'preview heal: ' + id + ' loaded as a ' + Math.round(pv.d) + 's preview (catalog ' + Math.round(pv.exp) + 's) - single queue rebuild to re-acquire its license (foreground epoch ' + foregroundEpoch + ')' });
+  healScheduled = true;
+  op(async () => {
+    healInFlight = true;
+    try {
+      // Re-confirm inside the op: same song, still a preview.
+      const cur = music.nowPlayingItem;
+      if (cur && String(cur.id) === id && assetIsPreview(cur)) {
+        await rebuildQueueAtCurrent(seekBack, id);
+      } else {
+        post({ type: 'log', message: 'preview heal: state changed before the rebuild ran - standing down' });
       }
-      return;
-    }
-  }
-  if (Date.now() - healLastTry < 15000) return;
-  healAttempts[id] = used + 1;
-  healTryAt[id] = Date.now();
-  healLastTry = Date.now();
-  const seekBack = t;
-  post({ type: 'log', message: 'preview heal: ' + id + ' loaded as a ' + Math.round(d) + 's preview (catalog ' + Math.round(exp) + 's) - force-rebuilding the queue to re-acquire its license (attempt ' + (used + 1) + ')' });
-  op(async () => { healInFlight = true; try { await rebuildQueueAtCurrent(seekBack, id); } finally { healInFlight = false; } }).catch(() => {});
+    } finally { healInFlight = false; healScheduled = false; }
+  }).catch(() => { healScheduled = false; });
 }
 
 // ---------- v109.10 diagnostics: JS heartbeat + visibility ----------
@@ -433,12 +473,12 @@ try {
     // requests that died while the page was hidden (the fast
     // webPlayback 'Load failed' cluster) can only be retried now,
     // in the foreground. Swift decides what recovery is warranted.
-    if (document.visibilityState === 'visible') { post({ type: 'foreground' }); sendAuth(); }
+    if (document.visibilityState === 'visible') { foregroundEpoch++; visibleSince = Date.now(); post({ type: 'foreground' }); sendAuth(); }
   });
 } catch (e) {}
 try {
   window.addEventListener('pagehide', () => post({ type: 'log', message: 'pagehide' }));
-  window.addEventListener('pageshow', () => { post({ type: 'log', message: 'pageshow' }); post({ type: 'foreground' }); sendAuth(); });
+  window.addEventListener('pageshow', () => { foregroundEpoch++; visibleSince = Date.now(); post({ type: 'log', message: 'pageshow' }); post({ type: 'foreground' }); sendAuth(); });
 } catch (e) {}
 
 // ---------- lock screen / control centre buttons (v107) ----------
@@ -582,7 +622,9 @@ async function setQueueDroppingBad(songs, targetId) {
   let current = songs;
   for (let attempt = 0; ; attempt++) {
     try {
-      await mutate(() => music.setQueue({ songs: current, startIndex: 0, startPlaying: true }));
+      setQueueInFlight++;
+      try { await mutate(() => music.setQueue({ songs: current, startIndex: 0, startPlaying: true })); }
+      finally { setQueueInFlight--; }
       return { kept: current };
     } catch (e) {
       const bad = parseUnresolved(e);
@@ -613,6 +655,8 @@ function completeQueueInBackground(rest, targetId, gen) {
     return;
   }
   (async () => {
+   completionActive = true;
+   try {
     for (let i = 0; i < rest.length; i += COMPLETION_CHUNK) {
       if (completionStale(gen, targetId)) return;
       // v109.13: never feed the catalog while the page is hidden.
@@ -648,7 +692,53 @@ function completeQueueInBackground(rest, targetId, gen) {
       if (i + COMPLETION_CHUNK < rest.length) await new Promise(r => setTimeout(r, COMPLETION_GAP_MS));
     }
     if (!completionStale(gen, targetId)) post({ type: 'log', message: 'queue completed in background (' + loadedQueueIds().length + ' songs)' });
+   } finally { completionActive = false; }
   })().catch(() => {});
+}
+// v109.19 (GPT v120 verdict): queue completion is DEFERRED until
+// the head song's start is confirmed. play() settling in 84ms
+// says nothing about the license - the asset may still resolve
+// as a 30s preview - and feeding 25 more catalog resolutions
+// into that exact window crowds out the fragile license
+// acquisition. The gate releases completion when the head item
+// is the target, its clock is genuinely advancing, and either
+// the asset is not a preview or the single preview heal for it
+// has run its course (so a stuck preview never strands the
+// queue at one song either).
+let pendingCompletion = null;
+const completionWatch = { targetId: null, firstT: -1, since: 0 };
+function completionGateTick() {
+  const pc = pendingCompletion;
+  if (!pc) return;
+  if (pc.gen !== queueReqToken) { pendingCompletion = null; return; }
+  if (!music || !music.nowPlayingItem) return;
+  const id = String(music.nowPlayingItem.id || '');
+  if (id !== pc.targetId) return;
+  const t = music.currentPlaybackTime || 0;
+  const now = Date.now();
+  if (completionWatch.targetId !== id) { completionWatch.targetId = id; completionWatch.firstT = t; completionWatch.since = now; return; }
+  if (t <= completionWatch.firstT + 0.5) return; // clock not advancing yet
+  const pv = assetIsPreview(music.nowPlayingItem);
+  const d = music.currentPlaybackDuration || 0;
+  if (!pv && d > 0) {
+    pendingCompletion = null;
+    post({ type: 'log', message: 'head song confirmed (asset ' + Math.round(d) + 's, advancing) - releasing queue completion' });
+    completeQueueInBackground(pc.rest, pc.targetId, pc.gen);
+    return;
+  }
+  if (pv && healEpochById[id] === foregroundEpoch && !healScheduled && !healInFlight) {
+    pendingCompletion = null;
+    post({ type: 'log', message: 'head song still a preview after its single heal - releasing queue completion anyway' });
+    completeQueueInBackground(pc.rest, pc.targetId, pc.gen);
+    return;
+  }
+  if (!pv && d <= 0 && now - completionWatch.since > 15000) {
+    // Duration never became readable while the clock advanced
+    // for 15s: release rather than strand the queue at 1 song.
+    pendingCompletion = null;
+    post({ type: 'log', message: 'head song advancing but duration unreadable for 15s - releasing queue completion' });
+    completeQueueInBackground(pc.rest, pc.targetId, pc.gen);
+  }
 }
 // v109.11 (GPT option D, verified against the MusicKit v3 source):
 // when Swift hands over the tapped song's full API resource, queue
@@ -666,7 +756,9 @@ async function setQueueTarget(win, targetId, resource) {
   if (resource && dataFormEnabled() && String(resource.id) === targetId &&
       typeof resource.type === 'string' && resource.attributes) {
     try {
-      await mutate(() => music.setQueue({ items: [resource], startPlaying: true }));
+      setQueueInFlight++;
+      try { await mutate(() => music.setQueue({ items: [resource], startPlaying: true })); }
+      finally { setQueueInFlight--; }
       return { kept: [targetId], via: 'data' };
     } catch (e) {
       post({ type: 'log', message: 'playQueue: data-form setQueue failed (' + String((e && e.message) || e) + '), falling back to ids' });
@@ -699,7 +791,11 @@ async function startRotated(rotatedAll, targetId, gen, resource) {
   else post({ type: 'log', message: 'play settled in ' + (Date.now() - tPlay) + 'ms' });
   const dropped = new Set(win.filter(id => res.kept.indexOf(id) < 0));
   const rest = rotatedAll.slice(win.length).filter(id => !dropped.has(id));
-  completeQueueInBackground(rest, targetId, gen);
+  // v109.19: do NOT complete immediately - the gate in the 500ms
+  // tick releases completion once the head song's start is
+  // confirmed (see completionGateTick).
+  pendingCompletion = rest.length ? { rest: rest, targetId: targetId, gen: gen } : null;
+  if (pendingCompletion) post({ type: 'log', message: 'queue completion deferred until the head song is confirmed (' + rest.length + ' songs waiting)' });
   return true;
 }
 // Index of the now-playing song inside the app list, or -1.
@@ -754,29 +850,12 @@ window.AoiEngine = {
       authSnapshot('recover-end');
     }).catch(() => {});
   },
-  // v109.13: the app's recovery paths call this instead of
-  // playQueue - playQueue's same-list shortcut would answer
-  // 'play only' and never re-acquire the license (the v115 no-op).
-  forceReload() {
-    if (!music) return;
-    return op(async () => {
-      // v109.16 (GPT round 4): self-check first. Swift may ask for a
-      // reload after the engine already healed the song itself;
-      // rebuilding a healthy queue restarts the song for nothing
-      // (device log 2026-11-18 09:50: three rebuilds in ~15s).
-      const fit = music.nowPlayingItem;
-      const fexp = fit && fit.attributes ? (fit.attributes.durationInMillis || 0) / 1000 : 0;
-      const fd = music.currentPlaybackDuration || 0;
-      if (fit && fexp > 90 && fd >= 45) {
-        post({ type: 'log', message: 'forceReload: current asset already full-length (' + Math.round(fd) + 's) - play only, no rebuild' });
-        try { await music.play(); } catch (e) {}
-        return;
-      }
-      const t = music.currentPlaybackTime || 0;
-      post({ type: 'log', message: 'forceReload: rebuilding the queue at the current song to re-acquire its license' });
-      await rebuildQueueAtCurrent(t);
-    }).catch(() => {});
-  },
+  // v109.19 (GPT v120 verdict): the JS forceReload() recovery
+  // entry is REMOVED. It was a second queue-recovery owner next
+  // to the engine's own heal - Swift could order a whole-queue
+  // rebuild from the outside, which is exactly the dual-control
+  // failure mode behind the recovery fights. The internal
+  // rebuild primitive stays; only the heal may call it.
   healthCheck(nonce) {
     post({ type: 'pong', nonce: nonce, ready: !!music, authorized: !!(music && music.isAuthorized), storefront: music ? (music.storefrontId || '') : '' });
   },
