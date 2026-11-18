@@ -34,7 +34,7 @@ window.alert = function (msg) {
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.16';
+window.ENGINE_VERSION = '109.17';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 // v109.13: alert plumbing (the override script sits before the
@@ -318,6 +318,7 @@ function playVerifyTick() {
 // (currentPlaybackDuration) against the catalog duration on the
 // item itself - no extra fetch.
 const healAttempts = {};
+const healTryAt = {};
 const healGiveUpLogged = {};
 let healLastTry = 0;
 async function rebuildQueueAtCurrent(seekBack) {
@@ -353,27 +354,48 @@ function previewHealTick(fromMediaKey) {
   const isPreview = d > 10 && d < 45 && d < exp * 0.6;
   if (!isPreview) {
     if (healAttempts[id]) {
-      post({ type: 'log', message: 'preview heal: ' + id + ' is full-length now (' + Math.round(d) + 's)' });
-      post({ type: 'previewHealed', id: id, generation: queueReqToken });
-      delete healAttempts[id];
+      // v109.17: declare victory only on a CREDIBLE full duration.
+      // Device log 2026-11-18 10:48: right after a rebuild the new
+      // item's duration reads 0 (unknown), the old code cried
+      // "full-length now (0s)", cleared the badge AND the attempt
+      // counter - then the asset landed as a preview again and the
+      // whole cycle repeated, burning the session's attempts on
+      // phantom successes.
+      const credible = d >= 45 || (exp > 0 && d >= exp * 0.6);
+      if (credible) {
+        post({ type: 'log', message: 'preview heal: ' + id + ' is full-length now (' + Math.round(d) + 's)' });
+        post({ type: 'previewHealed', id: id, generation: queueReqToken });
+        delete healAttempts[id];
+        delete healTryAt[id];
+      }
     }
     return;
   }
   const t = music.currentPlaybackTime || 0;
   if (!fromMediaKey && t < 2) return;
   if (document.visibilityState !== 'visible') return;
-  const used = healAttempts[id] || 0;
+  let used = healAttempts[id] || 0;
   if (used >= 2) {
-    if (!healGiveUpLogged[id]) {
-      healGiveUpLogged[id] = 1;
-      post({ type: 'log', message: 'preview heal: gave up on ' + id + ' after 2 rebuilds (asset still ' + Math.round(d) + 's vs catalog ' + Math.round(exp) + 's)' });
-      post({ type: 'error', where: 'previewHeal', message: 'preview persists for ' + id });
-      post({ type: 'previewExhausted', id: id, generation: queueReqToken });
+    // v109.17: a song that relapses long after its attempts were
+    // spent (license lost again in a later window) earns a fresh
+    // pair of attempts - the give-up is per-window, not per-session.
+    if (Date.now() - (healTryAt[id] || 0) > 600000) {
+      delete healAttempts[id];
+      delete healGiveUpLogged[id];
+      used = 0;
+    } else {
+      if (!healGiveUpLogged[id]) {
+        healGiveUpLogged[id] = 1;
+        post({ type: 'log', message: 'preview heal: gave up on ' + id + ' after 2 rebuilds (asset still ' + Math.round(d) + 's vs catalog ' + Math.round(exp) + 's)' });
+        post({ type: 'error', where: 'previewHeal', message: 'preview persists for ' + id });
+        post({ type: 'previewExhausted', id: id, generation: queueReqToken });
+      }
+      return;
     }
-    return;
   }
   if (Date.now() - healLastTry < 15000) return;
   healAttempts[id] = used + 1;
+  healTryAt[id] = Date.now();
   healLastTry = Date.now();
   const seekBack = t;
   post({ type: 'log', message: 'preview heal: ' + id + ' loaded as a ' + Math.round(d) + 's preview (catalog ' + Math.round(exp) + 's) - force-rebuilding the queue to re-acquire its license (attempt ' + (used + 1) + ')' });
