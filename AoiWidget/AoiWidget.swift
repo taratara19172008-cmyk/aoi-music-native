@@ -211,56 +211,9 @@ private func widgetAccent() -> Color {
                  blue: Double(v & 0xff) / 255)
 }
 
-// v114: Shazam launcher widget - a small square of liquid glass with
-// the official glyph in the theme colour. A widget cannot record
-// audio, so the tap opens the app straight into listening mode
-// (aoimusic://shazam).
-struct ShazamWidgetView: View {
-    var body: some View {
-        ZStack {
-            Image(systemName: "shazam.logo")
-                .font(.system(size: 62, weight: .semibold))
-                .foregroundStyle(widgetAccent())
-                .shadow(color: widgetAccent().opacity(0.45), radius: 12)
-                // v115: a gentle repeating pulse - the most motion
-                // WidgetKit permits (widgets render as snapshots;
-                // continuous animation is a platform limit).
-                .symbolEffect(.pulse, options: .repeating.speed(0.55))
-            VStack {
-                Spacer()
-                Text("听音识曲")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 2)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .containerBackground(for: .widget) {
-            ZStack {
-                Rectangle().fill(.ultraThinMaterial)
-                LinearGradient(colors: [widgetAccent().opacity(0.28), .clear, widgetAccent().opacity(0.12)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-            }
-        }
-        .widgetURL(URL(string: "aoimusic://shazam"))
-    }
-}
-
-struct AoiShazamWidget: Widget {
-    var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "AoiShazam", provider: NPProvider()) { _ in
-            ShazamWidgetView()
-        }
-        .configurationDisplayName("听音识曲")
-        .description("点一下，打开应用开始识别歌曲")
-        .supportedFamilies([.systemSmall])
-    }
-}
-
 @main
 struct AoiWidgetBundle: WidgetBundle {
     var body: some Widget {
         AoiNowPlayingWidget()
-        AoiShazamWidget()
     }
 }
