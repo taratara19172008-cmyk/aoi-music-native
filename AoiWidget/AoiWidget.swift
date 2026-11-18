@@ -8,52 +8,19 @@ import AppIntents
 // itself turns to liquid glass, because the artwork IS the widget's
 // container background, which is exactly the layer clear mode
 // glassifies. State arrives through the app group the app publishes
-// into (see WidgetShared in the app target); the buttons post transport
-// commands back through the same group + a Darwin notification, which
-// the app executes on its playback engine.
+// into (see WidgetShared in the app target). Transport runs through
+// PlaybackIntents.swift: AudioPlaybackIntent types the system
+// executes in the APP's process - the v107-v114 group-defaults +
+// Darwin-notification path could not wake a suspended app (the
+// Darwin centre ignores deliverImmediately) and the buttons were
+// dead on the home screen.
 // v108: the buttons are plain ultraThinMaterial circles with a stroke —
 // v107 put .glassEffect(.clear.interactive()) on the button labels and
 // on her phone the buttons rendered as NOTHING at all (empty widget:
 // gradient + note, no controls). Bog-standard materials always render.
 private let groupId = "group.c2bb27f0fc08e2b5.1"
-private let commandKey = "np_command"
 
 private func sharedDefaults() -> UserDefaults? { UserDefaults(suiteName: groupId) }
-
-private func postCommand(_ cmd: String) {
-    sharedDefaults()?.set(cmd, forKey: commandKey)
-    CFNotificationCenterPostNotification(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        CFNotificationName(rawValue: "com.aoimusic.widget.command" as CFString),
-        nil, nil, true)
-}
-
-struct PrevIntent: AppIntent {
-    static var title: LocalizedStringResource = "Previous track"
-    static var openAppWhenRun = false
-    func perform() async throws -> some IntentResult {
-        postCommand("prev")
-        return .result()
-    }
-}
-
-struct ToggleIntent: AppIntent {
-    static var title: LocalizedStringResource = "Play or pause"
-    static var openAppWhenRun = false
-    func perform() async throws -> some IntentResult {
-        postCommand("toggle")
-        return .result()
-    }
-}
-
-struct NextIntent: AppIntent {
-    static var title: LocalizedStringResource = "Next track"
-    static var openAppWhenRun = false
-    func perform() async throws -> some IntentResult {
-        postCommand("next")
-        return .result()
-    }
-}
 
 struct NPEntry: TimelineEntry {
     var date: Date
@@ -91,26 +58,47 @@ struct NPWidgetView: View {
 
     var body: some View {
         ZStack {
+            // v115: the WHOLE cover, fitted - the old scaledToFill
+            // centre-cropped the edges away (her complaint). The
+            // fitted cover floats over a blurred, dimmed copy of
+            // itself, so the margins carry the cover's own colours.
+            if let img = entry.art {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFit()
+                    .shadow(color: .black.opacity(0.30), radius: 8, y: 3)
+                    .padding(.horizontal, 8)
+                    .padding(.top, 6)
+                    .padding(.bottom, 40)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Image(systemName: "music.note")
+                    .font(.system(size: 44, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .padding(.bottom, 30)
+            }
             VStack {
                 Spacer()
                 // Soft scrim so the white glyphs stay readable on light covers.
                 LinearGradient(colors: [.clear, .black.opacity(0.30)],
                                startPoint: .top, endPoint: .bottom)
-                    .frame(height: 68)
+                    .frame(height: 56)
             }
             VStack {
                 Spacer()
-                HStack(spacing: 0) {
+                // v115: the three buttons travel as one centred
+                // group with real clearance from the widget's edges
+                // (the old row stretched them to the very sides).
+                HStack {
                     Spacer()
-                    glassButton("backward.fill", intent: PrevIntent())
-                    Spacer()
-                    glassButton(entry.isPlaying ? "pause.fill" : "play.fill", intent: ToggleIntent())
-                    Spacer()
-                    glassButton("forward.fill", intent: NextIntent())
+                    HStack(spacing: 20) {
+                        glassButton("backward.fill", intent: PrevIntent())
+                        glassButton(entry.isPlaying ? "pause.fill" : "play.fill", intent: ToggleIntent())
+                        glassButton("forward.fill", intent: NextIntent())
+                    }
                     Spacer()
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 10)
+                .padding(.bottom, 8)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -123,6 +111,8 @@ struct NPWidgetView: View {
             Image(uiImage: img)
                 .resizable()
                 .scaledToFill()
+                .blur(radius: 18)
+                .overlay(Color.black.opacity(0.10))
         } else {
             ZStack {
                 LinearGradient(colors: [Color(red: 0.98, green: 0.30, blue: 0.42),
@@ -164,6 +154,7 @@ struct NPWidgetView: View {
                         LinearGradient(colors: [.white.opacity(0.95), .white.opacity(0.55)],
                                        startPoint: .top, endPoint: .bottom)
                     )
+                    .contentTransition(.symbolEffect(.replace))
             }
             .frame(width: 52, height: 52)
             .shadow(color: .black.opacity(0.30), radius: 5, y: 2)
@@ -209,6 +200,10 @@ struct ShazamWidgetView: View {
                 .font(.system(size: 62, weight: .semibold))
                 .foregroundStyle(widgetAccent())
                 .shadow(color: widgetAccent().opacity(0.45), radius: 12)
+                // v115: a gentle repeating pulse - the most motion
+                // WidgetKit permits (widgets render as snapshots;
+                // continuous animation is a platform limit).
+                .symbolEffect(.pulse, options: .repeating.speed(0.55))
             VStack {
                 Spacer()
                 Text("听音识曲")
