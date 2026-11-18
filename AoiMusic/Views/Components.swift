@@ -533,8 +533,24 @@ struct SectionTitle: View {
 // Muted, auto-looping video used for Apple Music motion artwork (animated covers).
 struct LoopingVideo: UIViewRepresentable {
     var url: URL
-    func makeUIView(context: Context) -> LoopingVideoView { LoopingVideoView(url: url) }
-    func updateUIView(_ uiView: LoopingVideoView, context: Context) { uiView.setURL(url) }
+    // v116: readiness/failure reporting. A motion cover whose video
+    // stalls or fails must not sit on screen as an invisible layer
+    // hiding the static cover - the parent keeps the static artwork
+    // underneath and only fades the video in once it is actually
+    // ready to play.
+    var onReady: (() -> Void)? = nil
+    var onFail: (() -> Void)? = nil
+    func makeUIView(context: Context) -> LoopingVideoView {
+        let v = LoopingVideoView(url: url)
+        v.onReady = onReady
+        v.onFail = onFail
+        return v
+    }
+    func updateUIView(_ uiView: LoopingVideoView, context: Context) {
+        uiView.onReady = onReady
+        uiView.onFail = onFail
+        uiView.setURL(url)
+    }
     static func dismantleUIView(_ uiView: LoopingVideoView, coordinator: ()) { uiView.stop() }
 }
 
@@ -543,6 +559,10 @@ final class LoopingVideoView: UIView {
     private var playerLayer: AVPlayerLayer?
     private var curURL: URL?
     private var endObs: NSObjectProtocol?
+    private var statusObs: NSKeyValueObservation?
+    private var reportedFor: URL?
+    var onReady: (() -> Void)?
+    var onFail: (() -> Void)?
     init(url: URL) {
         super.init(frame: .zero)
         setURL(url)
@@ -557,6 +577,17 @@ final class LoopingVideoView: UIView {
         stop()
         curURL = url
         let item = AVPlayerItem(url: url)
+        statusObs?.invalidate()
+        statusObs = item.observe(\.status, options: [.new]) { [weak self] it, _ in
+            guard let self = self, self.curURL == url, self.reportedFor != url else { return }
+            if it.status == .readyToPlay {
+                self.reportedFor = url
+                DispatchQueue.main.async { self.onReady?() }
+            } else if it.status == .failed {
+                self.reportedFor = url
+                DispatchQueue.main.async { self.onFail?() }
+            }
+        }
         let p = AVPlayer(playerItem: item)
         p.isMuted = true
         p.actionAtItemEnd = .none
@@ -573,6 +604,8 @@ final class LoopingVideoView: UIView {
         p.play()
     }
     func stop() {
+        statusObs?.invalidate()
+        statusObs = nil
         player?.pause()
         if let o = endObs { NotificationCenter.default.removeObserver(o); endObs = nil }
         playerLayer?.removeFromSuperlayer()
