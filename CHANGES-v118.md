@@ -41,7 +41,8 @@ WidgetConfiguration.swift；以下只收录核实属实或我自己读码确认�
 13. **跨区匹配（GPT C1-8，核实属实）**：resolveInStorefront 先全等归一化匹配，无命中才退子串包含。
 
 ## 精简（核实后，仅真死代码）
-14. 删 DownloadsView.swift（136 行，下载功能撤销后零引用）。
+14. DownloadsView.swift 改名 FavoritesView.swift：该文件里根本没有 DownloadsView，
+    装的是在用的 FavoritesView（首轮打包因此缺类型失败，已恢复并改名，代码一行未删）。
 15. 删 EngineBridge.onQueue 死消息路径（无 JS 生产者、无消费者赋值）。
 16. 否决项：GPT A1-3「删小组件 systemSmall 分支」——事实相反，两个 widget 都只注册
     systemSmall，她桌面用的就是小尺寸，删了即坏。GPT A2 的引擎队列合并、授权合并等深重构
