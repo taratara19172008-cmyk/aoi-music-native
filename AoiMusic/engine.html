@@ -13,7 +13,7 @@ window.AOI_CONFIG = { developerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZ
 <body>
 <script>
 'use strict';
-window.ENGINE_VERSION = '109.11';
+window.ENGINE_VERSION = '109.12';
 function post(o) { try { window.webkit.messageHandlers.aoi.postMessage(o); } catch (e) {} }
 post({ type: 'boot' });
 const swReady = Promise.resolve();
@@ -179,6 +179,16 @@ function sendAuth() {
   if (!music) return;
   post({ type: 'auth', authorized: !!music.isAuthorized, storefront: music.storefrontId || '', token: music.musicUserToken || '' });
 }
+// v109.12 diagnostics (GPT rounds 2-3): an authorization snapshot at
+// every lifecycle point that matters, so the next 30s-preview
+// incident is decidable from the log alone - was the token lost
+// (isAuthorized=false / mut=no), or did only the license path fail
+// (authorized, mut present, webPlayback requests dying)? The token
+// VALUE is never logged, only its presence.
+function authSnapshot(tag) {
+  if (!music) return;
+  post({ type: 'log', message: 'auth[' + tag + '] isAuthorized=' + !!music.isAuthorized + ' storefront=' + (music.storefrontId || '') + ' mut=' + (music.musicUserToken ? 'yes' : 'no') });
+}
 setInterval(() => {
   if (!music) return;
   post({ type: 'progress', t: music.currentPlaybackTime || 0, d: music.currentPlaybackDuration || 0, isPlaying: !!music.isPlaying });
@@ -204,11 +214,18 @@ setInterval(() => {
   }
 }, 1000);
 try {
-  document.addEventListener('visibilitychange', () => post({ type: 'log', message: 'visibility -> ' + document.visibilityState }));
+  document.addEventListener('visibilitychange', () => {
+    post({ type: 'log', message: 'visibility -> ' + document.visibilityState });
+    // v109.12: becoming visible again is the recovery trigger - the
+    // requests that died while the page was hidden (the fast
+    // webPlayback 'Load failed' cluster) can only be retried now,
+    // in the foreground. Swift decides what recovery is warranted.
+    if (document.visibilityState === 'visible') { post({ type: 'foreground' }); sendAuth(); }
+  });
 } catch (e) {}
 try {
   window.addEventListener('pagehide', () => post({ type: 'log', message: 'pagehide' }));
-  window.addEventListener('pageshow', () => post({ type: 'log', message: 'pageshow' }));
+  window.addEventListener('pageshow', () => { post({ type: 'log', message: 'pageshow' }); post({ type: 'foreground' }); sendAuth(); });
 } catch (e) {}
 
 // ---------- lock screen / control centre buttons (v107) ----------
@@ -248,6 +265,7 @@ async function initMK() {
     await swReady;
     post({ type: 'ready' });
     sendAuth();
+    authSnapshot('configure');
   } catch (e) { post({ type: 'error', where: 'configure', message: String((e && e.message) || e) }); }
 }
 document.addEventListener('musickitloaded', initMK);
@@ -475,8 +493,32 @@ window.AoiEngine = {
   async authorize() {
     if (!music) { post({ type: 'error', where: 'authorize', message: 'engine not ready' }); return; }
     post({ type: 'log', message: 'origin: ' + location.origin });
+    authSnapshot('authorize-start');
     try { await music.authorize(); } catch (e) { post({ type: 'error', where: 'authorize', message: String((e && e.message) || e) }); }
     sendAuth();
+    authSnapshot('authorize-end');
+  },
+  // v109.12: Swift-side auth plumbing. authState just reports;
+  // recoverAuth is the ONLY re-authorization path and it runs
+  // inside the serial op chain, so it can never interleave with a
+  // setQueue/play. It authorizes ONLY when the engine itself says
+  // it is unauthorized - a license-request timeout must never
+  // trigger it (GPT round 3). With a still-valid stored token,
+  // MusicKit's authorize() completes silently, no UI.
+  authState() { sendAuth(); authSnapshot('query'); },
+  recoverAuth() {
+    if (!music) return;
+    return op(async () => {
+      authSnapshot('recover-start');
+      if (music.isAuthorized) {
+        post({ type: 'log', message: 'recoverAuth: already authorized, authorize() skipped' });
+        sendAuth();
+        return;
+      }
+      try { await music.authorize(); } catch (e) { post({ type: 'error', where: 'recoverAuth', message: String((e && e.message) || e) }); }
+      sendAuth();
+      authSnapshot('recover-end');
+    }).catch(() => {});
   },
   async unauthorize() {
     if (!music) return;
