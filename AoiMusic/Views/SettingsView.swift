@@ -24,11 +24,11 @@ struct SettingsView: View {
 
                 SectionTitle(text: settings.t("account"))
                 HStack(spacing: 10) {
-                    Image(systemName: engine.authorized ? "checkmark.circle.fill" : "person.crop.circle")
+                    Image(systemName: engine.authorized ? "checkmark.circle.fill" : (engine.authStateKnown ? "person.crop.circle" : "arrow.triangle.2.circlepath"))
                         .font(.title3)
                         .foregroundStyle(engine.authorized ? Color.green : .secondary)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(engine.authorized ? settings.t("connected") : settings.t("not_connected"))
+                        Text(engine.authorized ? settings.t("connected") : (engine.authStateKnown ? settings.t("not_connected") : settings.t("engine_recovering")))
                             .font(.subheadline.weight(.semibold))
                         Text("\(settings.t("storefront")): \(api.storefront)")
                             .font(.caption).foregroundStyle(.secondary)
