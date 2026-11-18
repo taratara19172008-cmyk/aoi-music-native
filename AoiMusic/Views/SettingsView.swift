@@ -369,6 +369,10 @@ struct BgCropView: View {
     // baseScale*zoom with `offset`; replay that transform at 2x into
     // a bitmap of the frame's aspect.
     private func render(frameW: CGFloat, frameH: CGFloat) -> UIImage {
+        // v115 (GPT review item 5): a zero/non-finite frame would
+        // propagate NaN through every scale below - fall back to
+        // the uncropped image instead.
+        guard frameW > 0, frameH > 0, frameW.isFinite, frameH.isFinite else { return image }
         let out = CGSize(width: frameW * 2, height: frameH * 2)
         let k = out.width / frameW
         let bs = baseScale(frameW: frameW, frameH: frameH) * zoom * k
