@@ -55,7 +55,14 @@ struct NowPlayingView: View {
                 .contentShape(Rectangle())
                 .onTapGesture { nav.showNowPlaying = false }
                 .gesture(
-                    DragGesture(minimumDistance: 4)
+                    // v116: GLOBAL coordinate space. The grabber
+                    // sits inside the page that the drag itself
+                    // offsets - in the default local space the
+                    // translation fed back into the offset and the
+                    // page flickered while pulling down (her
+                    // report). Global coordinates measure the
+                    // finger on the screen, immune to the offset.
+                    DragGesture(minimumDistance: 4, coordinateSpace: .global)
                         .onChanged { v in dismissDrag = max(v.translation.height, 0) }
                         .onEnded { v in
                             if v.translation.height > 90 {
