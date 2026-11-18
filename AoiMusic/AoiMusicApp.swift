@@ -1,4 +1,33 @@
 import SwiftUI
+import UserNotifications
+
+extension Notification.Name {
+    static let aoiShazamSongTap = Notification.Name("aoiShazamSongTap")
+}
+
+// v115: Shazam match notifications. willPresent shows the banner
+// even while the app is in the foreground (a match normally lands
+// while she is looking at the app); a tap routes the song id to
+// RootView, which resolves and plays it. The id is ALSO parked in
+// pendingSongId - a tap that cold-launches the app fires before
+// RootView has subscribed to the notification.
+final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = NotificationPresenter()
+    static var pendingSongId: String?
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse) async {
+        if let id = response.notification.request.content.userInfo["songId"] as? String {
+            NotificationPresenter.pendingSongId = id
+            NotificationCenter.default.post(name: .aoiShazamSongTap, object: nil, userInfo: ["songId": id])
+        }
+    }
+}
 
 enum DetailRoute: Identifiable, Hashable {
     case collection(kind: String, id: String)
@@ -26,6 +55,7 @@ struct AoiMusicApp: App {
     @StateObject private var shazam = ShazamRecognizer()
 
     init() {
+        UNUserNotificationCenter.current().delegate = NotificationPresenter.shared
         let api = APIClient()
         let engine = EngineBridge()
         _api = StateObject(wrappedValue: api)
