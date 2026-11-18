@@ -109,11 +109,15 @@ final class ShazamRecognizer: NSObject, ObservableObject {
         // and quietly resume if it did.
         if wasPlayingBeforeListen {
             Task { [weak self] in
-                for delay in [400_000_000, 1_300_000_000] as [UInt64] {
+                // v117: force the resume and do NOT consult
+                // isPlaying - in the interruption state MusicKit
+                // reports playing while the output is paused, so
+                // the v116 checks talked themselves out of acting.
+                for delay in [400_000_000, 1_300_000_000, 2_000_000_000] as [UInt64] {
                     try? await Task.sleep(nanoseconds: delay)
                     guard let self = self, self.isListening, self.wasPlayingBeforeListen,
-                          let p = self.player, !p.isPlaying else { continue }
-                    p.resumeAfterInterruption()
+                          let p = self.player else { continue }
+                    p.resumeAfterInterruption(force: true)
                 }
             }
         }
@@ -127,21 +131,29 @@ final class ShazamRecognizer: NSObject, ObservableObject {
         }
     }
 
+    // v117: ONE teardown-resume path for every exit from
+    // listening. v116 had it only in stop(); the success path
+    // (handleMatch) cleaned up the audio session and never
+    // resumed, stranding the song paused after every successful
+    // identification - the exact complaint she filed at 09:45.
+    private func resumeMusicAfterTeardown() {
+        guard wasPlayingBeforeListen else { return }
+        wasPlayingBeforeListen = false
+        Task { [weak self] in
+            for delay in [300_000_000, 900_000_000] as [UInt64] {
+                try? await Task.sleep(nanoseconds: delay)
+                guard let p = self?.player else { continue }
+                p.resumeAfterInterruption(force: true)
+            }
+        }
+    }
+
     private func stop() {
         timeoutTask?.cancel()
         timeoutTask = nil
         cleanupAudio()
         isListening = false
-        // v116: same protection on the way out - if deactivating
-        // the recording session paused the music, resume it.
-        if wasPlayingBeforeListen {
-            wasPlayingBeforeListen = false
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                guard let p = self?.player, !p.isPlaying else { return }
-                p.resumeAfterInterruption()
-            }
-        }
+        resumeMusicAfterTeardown()
     }
 
     private func cleanupAudio() {
@@ -150,6 +162,12 @@ final class ShazamRecognizer: NSObject, ObservableObject {
         shSession?.delegate = nil
         shSession = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        // v117 (GPT round 4): hand the session back in the Player's
+        // playback configuration BEFORE the force-resume checks
+        // run - deactivating alone left the session in the
+        // recording category, which kept the webview's output
+        // paused even when a force play() landed.
+        player?.restorePlaybackAudioSession()
     }
 
     private func handleMatch(_ item: SHMediaItem) {
@@ -158,6 +176,7 @@ final class ShazamRecognizer: NSObject, ObservableObject {
         timeoutTask = nil
         cleanupAudio()
         isListening = false
+        resumeMusicAfterTeardown()
         guard let api = api, let player = player, let settings = settings else { return }
         Task {
             var song: Song? = nil
