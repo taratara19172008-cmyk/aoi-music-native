@@ -16,5 +16,9 @@
 - 点歌后约 3 秒出声空窗（视频 2）：setQueue 落定延迟，先观察 109.18 表现。
 - 0:02 疑似自暂停：未定性，需日志。
 
+## 首包失败与修正（build #25 → 本定版）
+- build #25 编译失败：`safeAreaRegions` 不在 `UIViewController` 上（GPT 引的文档实为 `UIHostingController` 专有属性），RootView 三处报错。已按 GPT 答复 2 的原案改为应用自持根控制器：
+- **AoiMusicApp.swift 重写**：SwiftUI `WindowGroup` 入口改为 UIKit 场景生命周期——`@main AppDelegate` + `SceneDelegate` 自建窗口、持有对象图（settings/api/engine/player/nav/shazam，原 @StateObject 群），根控制器为自有子类 `AoiHostingController: UIHostingController<AnyView>`（静态弱引用 + `setKeyboardExcluded` 设置后回读 regions 记日志）。`KeyboardRegionFixer` 改为只调用该静态方法，不再遍历窗口。Info.plist 的 SceneManifest 补上 `UISceneConfigurations`（SceneDelegate 类名 + AppDelegate 内程式指定双保险）。深链 `aoimusic://shazam` 改由 SceneDelegate 的 openURLContexts 处理（含冷启动 connectionOptions）。
+
 ## 自检
-- 两个注入 JS 均经 node --check 通过；两文件括号平衡；safeAreaRegions 为 iOS 17 API，部署目标 17.0 全 target 一致，无需 #available 守卫；自定义类型名 KeyboardRegionFixer 无系统成员冲突。
+- 两个注入 JS 均经 node --check 通过；改动文件括号平衡；safeAreaRegions 为 iOS 17 的 UIHostingController 属性，部署目标 17.0 全 target 一致，无需 #available 守卫；自定义类型名 KeyboardRegionFixer / AoiHostingController 无系统成员冲突。Info.plist 经 plistlib 解析通过。
