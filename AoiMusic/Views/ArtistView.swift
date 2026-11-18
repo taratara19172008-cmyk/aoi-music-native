@@ -146,14 +146,12 @@ struct ArtistView: View {
             if let m = artistMotion, let u = URL(string: m) {
                 LoopingVideo(url: u)
                     .frame(width: w, height: 360)
-                    .mask(heroFadeMask)
+                    .mask(heroEdgeMask)
             } else if let urlStr = d.attributes?.artwork?.urlString(1200, 1000), let url = URL(string: urlStr) {
-                // v114 melt: same dissolve as the album/playlist hero -
-                // the photo fades ITSELF out (sharp + blurred copies
-                // under one alpha mask, gone before the frame ends) and
-                // the page background gradient shows through. No opaque
-                // bottom colour, no seam.
-                Group {
+                // v115 melt (her spec, same as the album hero): the
+                // photo's body stays sharp; only narrow top/bottom
+                // edge bands blur and fade into the page.
+                ZStack {
                     AsyncImage(url: url) { phase in
                         switch phase {
                         case .success(let img): img.resizable().scaledToFill()
@@ -170,9 +168,10 @@ struct ArtistView: View {
                     }
                     .frame(width: w, height: 360)
                     .clipped()
-                    .blur(radius: 28)
+                    .blur(radius: 24)
+                    .mask(heroEdgeBlurMask)
                 }
-                .mask(heroFadeMask)
+                .mask(heroEdgeMask)
             } else {
                 Color.white.opacity(0.3)
                     .frame(width: w, height: 360)
@@ -198,20 +197,6 @@ struct ArtistView: View {
         }
         .frame(width: w, height: 360)
         .clipped()
-    }
-
-    // Shared by the artist hero's still and motion branches: black
-    // until just above halfway, then a long ease to fully clear.
-    private var heroFadeMask: LinearGradient {
-        LinearGradient(stops: [
-            .init(color: .black, location: 0.0),
-            .init(color: .black, location: 0.36),
-            .init(color: .black.opacity(0.72), location: 0.56),
-            .init(color: .black.opacity(0.38), location: 0.71),
-            .init(color: .black.opacity(0.12), location: 0.82),
-            .init(color: .clear, location: 0.91),
-            .init(color: .clear, location: 1.0),
-        ], startPoint: .top, endPoint: .bottom)
     }
 
     private func mvCard(_ v: MVItem) -> some View {
