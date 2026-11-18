@@ -220,7 +220,10 @@ final class AIClient {
         var picks: [AIPick] = []
         var text = raw
         let start = raw.range(of: "{\"songs\"")?.lowerBound ?? raw.range(of: "{")?.lowerBound
-        if let start = start, let end = raw.range(of: "}", options: .backwards) {
+        // v115 (GPT review item 3): the two bounds were found
+        // independently - a "{" that starts AFTER the last "}" made
+        // a reversed range and trapped. Guard the order.
+        if let start = start, let end = raw.range(of: "}", options: .backwards), start <= end.lowerBound {
             let jsonStr = String(raw[start...end.lowerBound])
             struct Block: Decodable { var songs: [AIPick]? }
             if let data = jsonStr.data(using: .utf8),
