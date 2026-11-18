@@ -240,6 +240,10 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     // v115: auth self-check + serialized recovery (engine 109.12).
     func requestAuthState() { call("window.AoiEngine && AoiEngine.authState()") }
     func recoverAuth() { call("window.AoiEngine && AoiEngine.recoverAuth()") }
+    // v116: forced queue rebuild (engine 109.13) - the recovery
+    // paths use this instead of playQueue, whose same-list shortcut
+    // answered 'play only' and never re-acquired the license.
+    func forceReloadQueue() { call("window.AoiEngine && AoiEngine.forceReload()") }
     func playQueue(ids: [String], start: Int, shuffle: Bool, repeatMode: Int, targetJSON: String? = nil) {
         let arr = ids.map { jsString($0) }.joined(separator: ",")
         let dataArg = targetJSON.map { ", " + jsString($0) } ?? ""
@@ -256,6 +260,18 @@ final class EngineBridge: NSObject, ObservableObject, WKScriptMessageHandler, WK
     func callStation(_ id: String) { call("window.AoiEngine && AoiEngine.playStation(\(jsString(id)))") }
     func setShuffle(_ b: Bool) { call("window.AoiEngine && AoiEngine.setShuffle(\(b))") }
     func setRepeat(_ m: Int) { call("window.AoiEngine && AoiEngine.setRepeat(\(m))") }
+
+    // v116: a JS alert from either web view must never plaster a
+    // raw dialog over the UI (MusicKit surfaces its fatal DRM
+    // errors, e.g. "MEDIA_KEY: [object Event]", through
+    // window.alert). Log the message into the Settings log and
+    // dismiss it. The engine page also reroutes window.alert into
+    // its own log (engine 109.13); this delegate covers both web
+    // views regardless.
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        logEvent("page alert suppressed: \(message)")
+        completionHandler()
+    }
 
     // MARK: - Authorize popup (MusicKit JS opens a window)
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
