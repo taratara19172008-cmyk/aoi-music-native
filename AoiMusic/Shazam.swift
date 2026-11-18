@@ -29,6 +29,10 @@ final class ShazamRecognizer: NSObject, ObservableObject {
     private var shSession: SHSession?
     private let audioEngine = AVAudioEngine()
     private var timeoutTask: Task<Void, Never>?
+    // v116 (her spec): whether music was playing when listening
+    // started - recognition must not stop it, so an activation
+    // that still manages to pause it gets quietly undone.
+    private var wasPlayingBeforeListen = false
     private var startedAt = Date()
 
     func attach(player: Player, api: APIClient, nav: AppNav, settings: AppSettings) {
@@ -64,6 +68,7 @@ final class ShazamRecognizer: NSObject, ObservableObject {
 
     private func beginListening() {
         guard let player = player, let settings = settings else { return }
+        wasPlayingBeforeListen = player.isPlaying
         do {
             let av = AVAudioSession.sharedInstance()
             // v115 (GPT round 3): .mixWithOthers is the fix for
@@ -97,6 +102,21 @@ final class ShazamRecognizer: NSObject, ObservableObject {
         // v115: unmistakable state feedback - a toast now, and the
         // root view shows a "listening" pill for the whole session.
         player.showToast(Strings.get("shazam_listening", settings.lang))
+        // v116 (her spec): starting recognition must not stop the
+        // phone's music. .mixWithOthers keeps other apps audible,
+        // but the session activation itself can still pause the
+        // engine's webview playback - check twice shortly after
+        // and quietly resume if it did.
+        if wasPlayingBeforeListen {
+            Task { [weak self] in
+                for delay in [400_000_000, 1_300_000_000] as [UInt64] {
+                    try? await Task.sleep(nanoseconds: delay)
+                    guard let self = self, self.isListening, self.wasPlayingBeforeListen,
+                          let p = self.player, !p.isPlaying else { continue }
+                    p.resumeAfterInterruption()
+                }
+            }
+        }
         timeoutTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard let self = self, self.isListening else { return }
@@ -112,6 +132,16 @@ final class ShazamRecognizer: NSObject, ObservableObject {
         timeoutTask = nil
         cleanupAudio()
         isListening = false
+        // v116: same protection on the way out - if deactivating
+        // the recording session paused the music, resume it.
+        if wasPlayingBeforeListen {
+            wasPlayingBeforeListen = false
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                guard let p = self?.player, !p.isPlaying else { return }
+                p.resumeAfterInterruption()
+            }
+        }
     }
 
     private func cleanupAudio() {
