@@ -80,8 +80,15 @@ final class APIClient: ObservableObject {
         return nil
     }
 
+    // v115 (GPT review item 7): .urlQueryAllowed leaves &, =, +, #
+    // and % UNESCAPED, so a search term like "R&B" silently splits
+    // the query and corrupts the request. Query VALUES go through
+    // this stricter set everywhere.
+    static let queryValueAllowed = CharacterSet.urlQueryAllowed
+        .subtracting(CharacterSet(charactersIn: "&=+#%"))
+
     func search(term: String) async throws -> SearchResponse {
-        let q = term.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? term
+        let q = term.addingPercentEncoding(withAllowedCharacters: Self.queryValueAllowed) ?? term
         let r: SearchResponse = try await get("/v1/catalog/\(storefront)/search?term=\(q)&types=songs,albums,artists,playlists&limit=25")
         return r
     }
@@ -418,7 +425,7 @@ final class APIClient: ObservableObject {
     }
 
     func removeFromPlaylist(pid: String, librarySongId: String) async throws {
-        let q = "?ids[library-songs]=\(librarySongId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? librarySongId)&mode=all"
+        let q = "?ids[library-songs]=\(librarySongId.addingPercentEncoding(withAllowedCharacters: Self.queryValueAllowed) ?? librarySongId)&mode=all"
         _ = try await request(path: "/v1/me/library/playlists/\(pid)/tracks\(q)", method: "DELETE")
     }
 
@@ -445,20 +452,40 @@ final class APIClient: ObservableObject {
         let sf = storefront
         if sf.isEmpty { return nil }
         if let isrc = song.attributes?.isrc, !isrc.isEmpty,
-           let enc = isrc.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+           let enc = isrc.addingPercentEncoding(withAllowedCharacters: Self.queryValueAllowed) {
             let r: ListResponse<Song>? = try? await get("/v1/catalog/\(sf)/songs?filter[isrc]=\(enc)")
             if let hit = r?.data?.first { return hit }
         }
         let term = (song.title + " " + song.artist)
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+            .addingPercentEncoding(withAllowedCharacters: Self.queryValueAllowed) ?? ""
         if term.isEmpty { return nil }
         let r: SearchResponse? = try? await get("/v1/catalog/\(sf)/search?term=\(term)&types=songs&limit=25")
         let wantT = song.title.lowercased().trimmingCharacters(in: .whitespaces)
         let wantA = song.artist.lowercased().trimmingCharacters(in: .whitespaces)
-        return r?.results?.songs?.data?.first(where: {
-            $0.title.lowercased().trimmingCharacters(in: .whitespaces) == wantT &&
-            (!wantA.isEmpty && $0.artist.lowercased().contains(wantA) || wantA.contains($0.artist.lowercased()))
+        // v115 (GPT review item 8): an empty candidate artist made
+        // contains("") true, so any same-title song "matched".
+        // Both sides normalized; empty artists never match.
+        return r?.results?.songs?.data?.first(where: { cand in
+            guard cand.title.lowercased().trimmingCharacters(in: .whitespaces) == wantT,
+                  !wantA.isEmpty else { return false }
+            let ca = cand.artist.lowercased().trimmingCharacters(in: .whitespaces)
+            guard !ca.isEmpty else { return false }
+            return ca.contains(wantA) || wantA.contains(ca)
         })
+    }
+
+    // v115: one lightweight authenticated probe so the preview /
+    // auth recovery can tell "token is dead" (401) from "token fine,
+    // license path failed" (200) from "network unreachable" (nil).
+    func probeLibraryStatus() async -> Int? {
+        do {
+            _ = try await request(path: "/v1/me/library/songs?limit=1")
+            return 200
+        } catch APIError.http(let code, _) {
+            return code
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - Ratings / favorites
@@ -492,7 +519,14 @@ final class APIClient: ObservableObject {
         throw lastError ?? APIError.badData
     }
     func rateDelete(kind: String, id: String) async throws {
-        _ = try await request(path: "/v1/me/ratings/\(kind)/\(id)", method: "DELETE")
+        // v115 (GPT review item 12): deleting a rating that does not
+        // exist in this id space answers 404 - that IS the desired
+        // end state of an un-favorite, not a failure.
+        do {
+            _ = try await request(path: "/v1/me/ratings/\(kind)/\(id)", method: "DELETE")
+        } catch APIError.http(let code, _) where code == 404 {
+            return
+        }
         if await rating(kind: kind, id: id) {
             _ = try await request(path: "/v1/me/ratings/\(kind)/\(id)", method: "DELETE")
         }
